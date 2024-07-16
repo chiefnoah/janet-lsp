@@ -1,6 +1,6 @@
 (use judge)
 
-(use ../src/main)
+(import ../src/main)
 
 (deftest "parse-content-length"
   (test (parse-content-length "000:123:456:789") 123)
