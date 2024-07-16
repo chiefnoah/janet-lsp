@@ -41,7 +41,7 @@
 (defn on-document-change
   ``
   Handler for the ["textDocument/didChange"](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange) event.
-  
+
   Params contains the new state of the document.
   ``
   [state params]
@@ -154,9 +154,9 @@
     (setdyn :push-diagnostics true))
 
   [:ok state {:capabilities {:completionProvider {:resolveProvider true}
+                             # send the Full document https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentSyncKind
                              :textDocumentSync {:openClose true
-                                                :change 1 # send the Full document https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentSyncKind
-                                                }
+                                                :change 1}
                              :diagnosticProvider {:interFileDependencies true
                                                   :workspaceDiagnostics false}
                              :hoverProvider true
@@ -232,7 +232,7 @@
 
 (defn read-message []
   (let [input (file/read stdin :line)
-        content-length (+ (parse-content-length input) (read-offset))
+        content-length (+ (parse-content-length input) read-offset)
         input (file/read stdin content-length)]
     (json/decode input))) 
 
@@ -241,9 +241,9 @@
     (logging/log (string/format "got: %q" message))
     (match (handle-message message state)
       [:ok new-state & response] (do
-                                 (logging/log "successful rpc")
-                                 (write-response stdout (rpc/success-response (get message "id") ;response))
-                                 (message-loop :state new-state))
+                                   (logging/log "successful rpc")
+                                   (write-response stdout (rpc/success-response (get message "id") ;response))
+                                   (message-loop :state new-state))
       [:noresponse new-state] (message-loop :state new-state)
 
       [:error new-state err] (printf "unhandled error response: %m" err)
