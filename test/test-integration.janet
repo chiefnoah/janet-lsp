@@ -109,9 +109,44 @@
 (deftest: with-process "initialize and server info" [cursor]
   (def initialize (cursor :initialize))
   (test (get-in initialize [:result :serverInfo :name]) "janet-lsp")
+  (test (get-in initialize [:result :capabilities :positionEncoding]) "utf-16")
   (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
+
+(deftest: with-process "convert default UTF-16 feature positions" [cursor]
+  (def unicode-text "(do \"😀\" string)\n")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text unicode-text}})
+  (read-output cursor)
+  (def hover
+    (request cursor 47 "textDocument/hover"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 9}}))
+  (test (get-in hover [:result :range :start :character]) 9)
+  (test (get-in hover [:result :range :end :character]) 15)
+  (test (get-in
+          (request cursor 48 "textDocument/hover"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 0 :character 6}})
+          [:result])
+        :null))
+
+(deftest "negotiate UTF-8 feature positions"
+  (def cursor (start-lsp {:general {:positionEncodings ["utf-8" "utf-16"]}}))
+  (test (get-in (cursor :initialize) [:result :capabilities :positionEncoding]) "utf-8")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text "(do \"😀\" string)\n"}})
+  (read-output cursor)
+  (def hover
+    (request cursor 49 "textDocument/hover"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 11}}))
+  (test (get-in hover [:result :range :start :character]) 11)
+  (test (get-in hover [:result :range :end :character]) 17)
+  (exit-lsp cursor))
 
 (deftest "reject requests before initialization"
   (def cursor (spawn-lsp))

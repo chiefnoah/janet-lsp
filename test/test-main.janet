@@ -1,6 +1,7 @@
 (use judge)
 
 (import ../src/main)
+(import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
 (import spork/json)
@@ -13,6 +14,31 @@
               "decode error at position 0: unexpected character")
   (test-error (json/decode "{} trailing")
               "decode error at position 3: unexpected extra token"))
+
+(deftest "convert negotiated position encodings"
+  (def line "aé☃😀é")
+  (test (map |(position/units-to-byte line $ "utf-16") [0 1 2 3 5 6 7])
+        @[0 1 3 6 10 11 13])
+  (test (map |(position/byte-to-units line $ "utf-16") [0 1 3 6 10 11 13])
+        @[0 1 2 3 5 6 7])
+  (test (map |(position/units-to-byte line $ "utf-8") [0 1 3 6 10 11 13])
+        @[0 1 3 6 10 11 13])
+  (test (map |(position/units-to-byte line $ "utf-32") [0 1 2 3 4 5 6])
+        @[0 1 3 6 10 11 13]))
+
+(deftest "convert multiline positions and reject invalid offsets"
+  (def source "ascii\naé😀\n")
+  (test (position/lsp->byte-position source {:line 1 :character 4} "utf-16")
+        {:line 1 :character 7})
+  (test (position/byte->lsp-position source {:line 1 :character 7} "utf-16")
+        {:line 1 :character 4})
+  (test (position/document-end source "utf-16") {:line 2 :character 0})
+  (test (position/lsp->byte-position source {:line 1 :character 2} "utf-16")
+        {:line 1 :character 3})
+  (test (position/lsp->byte-position source {:line 1 :character 3} "utf-16") nil)
+  (test (position/lsp->byte-position source {:line 3 :character 0} "utf-16") nil)
+  (test (position/lsp->byte-position source {:line 1 :character 5} "utf-16") nil)
+  (test (position/byte->lsp-position source {:line 1 :character 2} "utf-16") nil))
 
 (deftest "parse LSP headers"
   (test (transport/parse-headers ["Content-Length: 123\r\n"]) 123)

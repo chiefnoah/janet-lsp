@@ -7,6 +7,7 @@
 (import ./lookup)
 (import ./rpc)
 (import ./parser)
+(import ./position)
 (import ./transport)
 (import ./uri)
 
@@ -30,7 +31,7 @@
 (eachk k jpm-defs
   (match (type k) :symbol (put-in jpm-defs [k :source-map] nil) nil))
 
-(defn run-diagnostics [filepath content]
+(defn run-diagnostics [filepath content encoding]
   (let [items @[]
         [diagnostics env]
         (eval/eval-buffer content
@@ -43,12 +44,13 @@
     (each res diagnostics
       (match res
         {:location [line col] :message message :severity severity}
-        (array/push items
-                    {:range
-                     {:start {:line (max 0 (dec line)) :character col}
-                      :end {:line (max 0 (dec line)) :character col}}
-                     :message message
-                     :severity severity})))
+        (when-let [lsp-position
+                   (position/byte->lsp-position
+                     content {:line (max 0 (dec line)) :character col} encoding)]
+          (array/push items
+                      {:range {:start lsp-position :end lsp-position}
+                       :message message
+                       :severity severity}))))
 
     (logging/info (string/format "`run-diagnostics` is returning these errors: %m" items) [:evaluation])
     (logging/dbg (string/format "`run-diagnostics` is returning this eval-context: %m" env) [:evaluation])
@@ -56,6 +58,10 @@
 
 (defn document-key [uri]
   uri)
+
+(defn request-byte-position [state params content]
+  (position/lsp->byte-position content (get params "position")
+                               (state :position-encoding)))
 
 (defn on-document-change
   ``
@@ -75,7 +81,8 @@
                  (<= version current-version)))
       [:noresponse state]
       (let [content (get-in params ["contentChanges" 0 "text"])
-            [diagnostics env] (run-diagnostics (document :path) content)]
+            [diagnostics env] (run-diagnostics (document :path) content
+                                               (state :position-encoding))]
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
@@ -108,7 +115,8 @@
         document (get-in state [:documents uri])]
     (if (nil? document)
       [:ok state :null]
-      (let [[diagnostics env] (run-diagnostics (document :path) (document :content))
+      (let [[diagnostics env] (run-diagnostics (document :path) (document :content)
+                                               (state :position-encoding))
             message {:kind "full"
                      :items diagnostics}]
         (put document :eval-env env)
@@ -128,7 +136,8 @@
         [:ok state :null])
       (do
         (let [message [{:range {:start {:line 0 :character 0}
-                                :end {:line 1000000 :character 1000000}}
+                                :end (position/document-end content
+                                                            (state :position-encoding))}
                         :newText new-content}]]
           (logging/message message [:formatting])
           [:ok state message])))))
@@ -139,7 +148,7 @@
         uri (document-key client-uri)
         version (get-in params ["textDocument" "version"])
         filepath (uri/file-uri->path client-uri)
-        [diagnostics env] (run-diagnostics filepath content)]
+        [diagnostics env] (run-diagnostics filepath content (state :position-encoding))]
     (put-in state [:documents uri] @{:content content
                                      :version version
                                      :uri client-uri
@@ -178,7 +187,7 @@
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
         eval-env (get-in state [:documents uri :eval-env])
         content (get-in state [:documents uri :content])
-        location (utils/get-location params)
+        location (request-byte-position state params content)
         local-bindings (parser/get-syms-at-loc location content)
         bindings (seq [bind :in (all-bindings eval-env)]
                    (binding-to-lsp-item bind eval-env))
@@ -212,15 +221,18 @@
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         eval-env (get-in state [:documents uri :eval-env])
-        {"line" line "character" character} (get params "position")
+        {:line line :character character} (request-byte-position state params content)
         {:word hover-word :range [start end]} (lookup/word-at {:line line :character character} content)
         hover-text (doc/my-doc* (symbol hover-word) eval-env)
         _ (logging/log (string/format "on-document-hover: hover-text is %m" hover-text) [:hover])
-        message (if (and hover-word hover-text)
+        start-position (position/byte->lsp-position
+                         content {:line line :character start} (state :position-encoding))
+        end-position (position/byte->lsp-position
+                       content {:line line :character end} (state :position-encoding))
+        message (if (and hover-word hover-text start-position end-position)
                   {:contents {:kind "markdown"
                               :value hover-text}
-                   :range {:start {:line line :character start}
-                           :end {:line line :character end}}}
+                   :range {:start start-position :end end-position}}
                   :null)]
     (logging/message message [:hover])
     [:ok state message]))
@@ -233,7 +245,7 @@
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         eval-env (get-in state [:documents uri :eval-env])
-        {"line" line "character" character} (get params "position")
+        {:line line :character character} (request-byte-position state params content)
         {:source sexp-text :range [start end]} (lookup/sexp-at {:line line :character character} content)
         function-symbol (or (first (peg/match '(* "(" (any :s) (<- (to " "))) sexp-text)) "none")
         signature (or (doc/get-signature (symbol function-symbol) eval-env) "not found")]
@@ -252,11 +264,15 @@
   [state params]
   (logging/info (string/format "on-initialize called with these params: %m" params) [:initialize])
   (put state :lifecycle :initialized)
+  (def position-encodings (get-in params ["capabilities" "general" "positionEncodings"] @[]))
+  (def position-encoding (if (has-value? position-encodings "utf-8") "utf-8" "utf-16"))
+  (put state :position-encoding position-encoding)
   (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
     (setdyn :push-diagnostics false)
     (setdyn :push-diagnostics true))
 
-  (let [message {:capabilities {:completionProvider {:resolveProvider true}
+  (let [message {:capabilities {:positionEncoding position-encoding
+                                :completionProvider {:resolveProvider true}
                                 :textDocumentSync {:openClose true
                                                    :change 1 # send the Full document https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentSyncKind
 }
@@ -308,7 +324,7 @@
   (let [request-uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents request-uri :content])
         eval-env (get-in state [:documents request-uri :eval-env])
-        {"line" line "character" character} (get params "position")
+        {:line line :character character} (request-byte-position state params content)
         {:word define-word :range [start end]} (lookup/word-at {:line line :character character} content)]
     (logging/info (string/format ``
                                 -------------------------
@@ -328,11 +344,17 @@
     (logging/info (string/format "`:source-map` is: %m" (get (get eval-env (symbol define-word) nil) :source-map nil)) [:definition])
     (if-let [symbol-lookup (get eval-env (symbol define-word) nil)
              [uri line col] (get symbol-lookup :source-map nil)
-             found (os/stat (path/abspath uri))
-             filepath (uri/path->file-uri (path/abspath uri))
+             target-path (path/abspath uri)
+             found (os/stat target-path)
+             target-content (slurp target-path)
+             target-position (position/byte->lsp-position
+                               target-content
+                               {:line (max 0 (dec line)) :character col}
+                               (state :position-encoding))
+             filepath (uri/path->file-uri target-path)
              message {:uri filepath
-                      :range {:start {:line (max 0 (dec line)) :character col}
-                              :end {:line (max 0 (dec line)) :character col}}}]
+                      :range {:start target-position
+                              :end target-position}}]
       (do
         (logging/message message [:definition])
         [:ok state message])
@@ -391,14 +413,22 @@
    "textDocument/signatureHelp" true
    "textDocument/definition" true})
 
+(def position-request-methods
+  {"textDocument/completion" true
+   "textDocument/hover" true
+   "textDocument/signatureHelp" true
+   "textDocument/definition" true})
+
 (defn handle-message [message state]
   (let [id (get message "id")
         method (get message "method")
-        params (get message "params")]
+        params (get message "params")
+        document-uri (get-in params ["textDocument" "uri"])
+        document (get-in state [:documents (document-key document-uri)])]
     (logging/info (string/format "handle-message received method request: `%s`" method) [:core] 0 id)
-    (if (and (get open-document-request-methods method)
-             (nil? (get-in state [:documents
-                                  (document-key (get-in params ["textDocument" "uri"]))])))
+    (if (or (and (get open-document-request-methods method) (nil? document))
+            (and (get position-request-methods method)
+                 (nil? (request-byte-position state params (document :content)))))
       [:ok state :null]
       (case method
       "initialize" (on-initialize state params)
@@ -574,7 +604,9 @@
   (when (os/stat "./.janet-lsp/startup.janet")
     (merge-into root-env (dofile "./.janet-lsp/startup.janet")))
 
-  (message-loop :state @{:documents @{} :lifecycle :uninitialized}))
+  (message-loop :state @{:documents @{}
+                         :lifecycle :uninitialized
+                         :position-encoding "utf-16"}))
 
 (defn start-debug-console []
   (def host "127.0.0.1")
