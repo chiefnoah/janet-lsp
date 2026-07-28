@@ -16,6 +16,17 @@
 
 (varfn definitions [])
 
+(defn content-hash [content]
+  (def offset (int/u64 "14695981039346656037"))
+  (def prime (int/u64 "1099511628211"))
+  (var fnv-1a offset)
+  (var fnv-1 offset)
+  (each byte (string/bytes content)
+    (def value (int/u64 byte))
+    (set fnv-1a (* (bxor fnv-1a value) prime))
+    (set fnv-1 (bxor (* fnv-1 prime) value)))
+  (string fnv-1a "-" fnv-1))
+
 (defn- node-range [node source]
   {:start (lookup/from-index (node :index) source)
    :end (lookup/from-index (+ (node :index) (node :len)) source)})
@@ -173,6 +184,7 @@
                        (get-in resolved [:range :start :character]))))
         (put reference :identity-kind (if definition :definition :local)))))
   {:uri document-uri
+   :content-hash (content-hash content)
    :definitions definitions
    :references references
    :imports imports})
@@ -316,10 +328,10 @@
            :when (= identity (reference :identity))]
     reference))
 
-(defn scan [root exclusions]
+(defn files [root exclusions]
   (unless (os/stat root)
     (error (string "workspace root does not exist: " root)))
-  (def records @{})
+  (def found @[])
   (def pending @[root])
   (while (not (empty? pending))
     (def current (array/pop pending))
@@ -331,11 +343,17 @@
       (when (and (string/has-suffix? ".janet" current)
                  (not (any? (map |(has-value? exclusions $)
                                  (string/split "/" current)))))
-        (try
-          (do
-            (def document-uri (uri/path->file-uri current))
-            (put records document-uri (analyze document-uri (slurp current))))
-          ([_] nil)))))
+        (array/push found current))))
+  (sort found))
+
+(defn scan [root exclusions]
+  (def records @{})
+  (each current (files root exclusions)
+    (try
+      (do
+        (def document-uri (uri/path->file-uri current))
+        (put records document-uri (analyze document-uri (slurp current))))
+      ([_] nil)))
   (def workspace @{:index records})
   (relink workspace)
   (workspace :index))

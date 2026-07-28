@@ -1,5 +1,6 @@
 (import spork/json)
 (import spork/path)
+(import ../../src/index-cache)
 (import ../../src/uri)
 
 (def document-uri
@@ -135,6 +136,8 @@
   (case (os/stat root :mode)
     :directory
     (do
+      (def cache-path (index-cache/path-for (uri/path->file-uri root)))
+      (when (os/stat cache-path) (os/rm cache-path))
       (each entry (os/dir root)
         (remove-tree (path/join root entry)))
       (os/rmdir root))

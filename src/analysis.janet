@@ -70,6 +70,9 @@
              (= (snapshot :trusted) (workspace :trusted)))
     snapshot))
 
+(defn find-snapshot [document snapshot-key]
+  (get-in document [:snapshots snapshot-key]))
+
 (defn store [document snapshot]
   (unless (document :snapshots) (put document :snapshots @{}))
   (unless (document :snapshot-order) (put document :snapshot-order @[]))

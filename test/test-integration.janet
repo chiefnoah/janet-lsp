@@ -1,4 +1,6 @@
 (import spork/path)
+(import ../src/index)
+(import ../src/index-cache)
 (import ../src/uri)
 
 (use judge ./support/lsp-client)
@@ -108,6 +110,51 @@
   (def symbols (request cursor 128 "workspace/symbol" {:query "without-progress"}))
   (test (get-in symbols [:result 0 :name]) "indexed-without-progress")
   (exit-lsp cursor)
+  (remove-tree root))
+
+(deftest "reuse valid workspace caches without a startup scan"
+  (def root (temp-directory "janet-lsp-index-cache-restart"))
+  (spit (path/join root "main.janet") "(def cached-across-restarts 1)\n")
+  (def root-uri (uri/path->file-uri root))
+  (def cache-path (index-cache/path-for root-uri))
+  (when (os/stat cache-path) (os/rm cache-path))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+
+  (def cursor (spawn-lsp))
+  (request cursor 143 "initialize"
+           {:rootUri root-uri
+            :capabilities {:window {:workDoneProgress true}
+                           :textDocument {:diagnostic {}}}})
+  (notify cursor "initialized")
+  # A warm cache emits only the trust request, not progress creation.
+  (def trust (read-output cursor))
+  (test (get-in trust [:method]) "window/showMessageRequest")
+  (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
+  (def symbols (request cursor 144 "workspace/symbol" {:query "across-restarts"}))
+  (test (get-in symbols [:result 0 :name]) "cached-across-restarts")
+  (spit (path/join root "main.janet") "(def updated-by-watcher 2)\n")
+  (notify cursor "workspace/didChangeWatchedFiles"
+          {:changes [{:uri (uri/path->file-uri (path/join root "main.janet"))
+                      :type 2}]})
+  (def updated (request cursor 145 "workspace/symbol" {:query "updated-by-watcher"}))
+  (test (get-in updated [:result 0 :name]) "updated-by-watcher")
+  (exit-lsp cursor)
+
+  (def restarted (spawn-lsp))
+  (request restarted 146 "initialize"
+           {:rootUri root-uri
+            :capabilities {:window {:workDoneProgress true}
+                           :textDocument {:diagnostic {}}}})
+  (notify restarted "initialized")
+  (def restarted-trust (read-output restarted))
+  (test (get-in restarted-trust [:method]) "window/showMessageRequest")
+  (respond restarted (get-in restarted-trust [:id]) {:title "Keep Restricted"})
+  (def persisted
+    (request restarted 147 "workspace/symbol" {:query "updated-by-watcher"}))
+  (test (get-in persisted [:result 0 :name]) "updated-by-watcher")
+  (exit-lsp restarted)
+  (when (os/stat cache-path) (os/rm cache-path))
   (remove-tree root))
 
 (deftest "cancel workspace index subprocesses"
@@ -462,9 +509,18 @@
               :position {:line 1 :character 3}}))
   (test (get-in definition [:result :range :start :character]) 0)
 
-  # A failed second event must roll back the valid first event in the batch.
+  # UTF-16 range positions count the astral symbol as two code units.
   (notify cursor "textDocument/didChange"
           {:textDocument {:uri document-uri :version 3}
+           :contentChanges
+           [{:range {:start {:line 0 :character 14}
+                     :end {:line 0 :character 16}}
+             :rangeLength 2
+             :text "ok"}]})
+
+  # A failed second event must roll back the valid first event in the batch.
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 4}
            :contentChanges
            [{:range {:start {:line 0 :character 5}
                      :end {:line 0 :character 12}}
@@ -482,21 +538,35 @@
   (test (has-value? (map |($ :label) (get-in completion [:result :items]))
                     "broken")
         false)
-  (test (get-in completion [:result :items 0 :data :version]) 2)
+  (test (get-in completion [:result :items 0 :data :version]) 3)
 
-  # UTF-16 range positions count the astral symbol as two code units.
+  # Higher-version ranged edits remain unsafe until a full replacement arrives.
   (notify cursor "textDocument/didChange"
-          {:textDocument {:uri document-uri :version 3}
+          {:textDocument {:uri document-uri :version 5}
            :contentChanges
            [{:range {:start {:line 0 :character 14}
                      :end {:line 0 :character 16}}
-             :rangeLength 2
-             :text "ok"}]})
+             :text "unsafe"}]})
   (def updated
     (request cursor 141 "textDocument/completion"
              {:textDocument {:uri document-uri}
               :position {:line 1 :character 7}}))
   (test (get-in updated [:result :items 0 :data :version]) 3)
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 6}
+           :contentChanges
+           [{:range {:start {:line 9 :character 0}
+                     :end {:line 9 :character 1}}
+             :text "ignored-before-full-replacement"}
+            {:text "(def restored \"ok\")\nrestored\n"}]})
+  (def resynchronized
+    (request cursor 142 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 8}}))
+  (test (has-value? (map |($ :label) (get-in resynchronized [:result :items]))
+                    "restored")
+        true)
+  (test (get-in resynchronized [:result :items 0 :data :version]) 6)
   (exit-lsp cursor))
 
 (deftest "pull clients use changed document analysis"
@@ -561,17 +631,22 @@
   (read-output cursor)
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri second-uri :languageId "janet"
-                          :version 4 :text "(def second 1)\nsecond\n"}})
+                          :version 4
+                          :text "(def closed-only-symbol-xyz 1)\nclosed-only-symbol-xyz\n"}})
   (read-output cursor)
   (notify cursor "textDocument/didChange"
           {:textDocument {:uri second-uri :version 5}
-           :contentChanges [{:text "(def second 2)\nsecond\n"}]})
+           :contentChanges
+           [{:text "(def closed-only-symbol-xyz 2)\nclosed-only-symbol-xyz\n"}]})
   (test (get-in (read-output cursor) [:params :version]) 5)
 
   (notify cursor "textDocument/didClose" {:textDocument {:uri second-uri}})
   (def cleared (read-output cursor))
   (test (= (get-in cleared [:params :uri]) second-uri) true)
   (test (get-in cleared [:params :diagnostics]) @[])
+  (def closed-symbols
+    (request cursor 148 "workspace/symbol" {:query "closed-only-symbol-xyz"}))
+  (test (get-in closed-symbols [:result]) @[])
   (test (get-in
           (request cursor 45 "textDocument/hover"
                    {:textDocument {:uri second-uri}
@@ -1120,14 +1195,27 @@
     (first (filter |(= "shared" ($ :label)) (get-in completion [:result :items]))))
   (def item-a (shared-item 86 document-uri))
   (def item-b (shared-item 87 second-uri))
+  (change-text-document cursor document-uri
+                        "(def shared :doc \"new document A docs\" 3)\nsha\n" 2)
   (def resolved-a (request cursor 88 "completionItem/resolve" item-a))
   (def resolved-b (request cursor 89 "completionItem/resolve" item-b))
   (test (nil? (string/find "from document A"
                            (get-in resolved-a [:result :documentation :value])))
         false)
+  (test (string/find "new document A docs"
+                     (get-in resolved-a [:result :documentation :value]))
+        nil)
   (test (nil? (string/find "from document B"
                            (get-in resolved-b [:result :documentation :value])))
         false)
+
+  (for version 3 8
+    (change-text-document cursor document-uri
+                          (string "(def shared :doc \"version " version " docs\" "
+                                  version ")\nsha\n")
+                          version))
+  (def evicted (request cursor 149 "completionItem/resolve" item-a))
+  (test (get-in evicted [:result :documentation]) nil)
 
   (notify cursor "textDocument/didClose" {:textDocument {:uri document-uri}})
   (def after-close (request cursor 90 "completionItem/resolve" item-a))

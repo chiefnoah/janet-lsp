@@ -95,6 +95,20 @@ applied immediately, and nested workspaces own files under the most specific
 matching root. Analysis environments, module discovery, startup files, and
 trust are isolated per root.
 
+### Workspace Index Cache
+
+Workspace symbol indexes are cached across server restarts under
+`$JANET_LSP_CACHE_DIR`, `$XDG_CACHE_HOME/janet-lsp`, or
+`$HOME/.cache/janet-lsp`, in that order. Cache entries are versioned and
+validated against the current root, exclusions, file set, size, modification
+time, inode, and device. Valid records are reused; only new or changed Janet
+files are reparsed by the background indexer. A fully valid cache avoids the
+startup index subprocess entirely.
+
+Watched-file notifications update the in-memory and persisted disk index
+atomically. Corrupt or incompatible cache files are discarded, and open-buffer
+records remain separate so unsaved source is never persisted as a disk record.
+
 An open document outside all configured file workspaces is treated as a
 standalone file. It retains parsing, core documentation, hover, signature, and
 local completion features, but remains restricted and does not inherit module

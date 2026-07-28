@@ -45,7 +45,9 @@
     (get-in params ["initializationOptions" "excludedDirectories"] @[]))
   (each configured (values (state :workspaces))
     (put configured :exclusions
-         (distinct (array ;index/default-exclusions ;configured-exclusions))))
+         (distinct (array ;index/default-exclusions ;configured-exclusions)))
+    (workspace/load-cache configured))
+  (workspace/partition-indexes state)
   (setdyn :push-diagnostics
           (nil? (get-in params ["capabilities" "textDocument" "diagnostic"])))
   (def result

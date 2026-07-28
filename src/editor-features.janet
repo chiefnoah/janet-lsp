@@ -1,4 +1,5 @@
 (import ./doc)
+(import ./analysis)
 (import ./logging)
 (import ./lookup)
 (import ./parser)
@@ -65,6 +66,8 @@
         result {:isIncomplete (> (length matching) limit)
                 :items (map |(merge $ {:data {:uri (document :uri)
                                               :version (document :version)
+                                              :snapshot (get-in document
+                                                                [:analysis :key])
                                               :binding (string ($ :label))}})
                             items)}]
     (logging/message result [:completion] 1)
@@ -72,9 +75,15 @@
 
 (defn on-completion-resolve [state params]
   (def label (or (get-in params ["data" "binding"]) (get params "label")))
-  (def eval-env (get-in state [:documents (get-in params ["data" "uri"]) :eval-env]))
+  (def document (get-in state [:documents (get-in params ["data" "uri"])]))
+  (def snapshot-key (get-in params ["data" "snapshot"]))
+  (def eval-env
+    (if snapshot-key
+      (get-in (analysis/find-snapshot document snapshot-key) [:eval-env])
+      (and document (document :eval-env))))
   (def documentation
-    (doc/my-doc* (symbol label) (or eval-env (make-env root-env))))
+    (and (or (nil? snapshot-key) eval-env)
+         (doc/my-doc* (symbol label) (or eval-env (make-env root-env)))))
   (def result (if documentation
                 (merge params {"documentation" {:kind "markdown"
                                                  :value documentation}})

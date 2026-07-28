@@ -34,6 +34,12 @@ Format for entires is <version-string> - release date.
   bounded cache of versioned parse, diagnostic, environment, index, reference,
   signature, and semantic snapshots shared across language features. Workspace
   ownership, index, and trust changes invalidate affected snapshots.
+- Workspace indexes now persist in a versioned user cache, reuse metadata-valid
+  records across restarts, incrementally rebuild changed files, update from
+  watched-file events, and discard malformed or incompatible cache data. Open
+  buffers and overlapping workspace roots remain isolated from disk records.
+- Rejected incremental edit batches now require full-content resynchronization,
+  and completion resolution uses the item's originating versioned snapshot.
 
 ## 0.0.11 - 2026-02-14
 

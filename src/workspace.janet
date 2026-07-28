@@ -1,5 +1,6 @@
 (import ./analysis)
 (import ./index)
+(import ./index-cache)
 (import ./logging)
 (import ./rpc)
 (import ./server-utils)
@@ -65,9 +66,53 @@
     :trusted (not (not trusted))
     :trust-prompted false
     :index @{}
+    :disk-index @{}
+    :cache-path (index-cache/path-for root-uri)
+    :cache-current false
     :exclusions index/default-exclusions
     :env workspace-env
     :unique-paths unique-paths})
+
+(defn- copy-index [records]
+  (def copied @{})
+  (eachp [document-uri record] records
+    (put copied document-uri record))
+  copied)
+
+(defn load-cache [workspace]
+  (try
+    (let [loaded (index-cache/load (workspace :cache-path)
+                                   (workspace :uri)
+                                   (workspace :path)
+                                   (workspace :exclusions))
+          disk-index (loaded :index)]
+      (put workspace :disk-index disk-index)
+      (put workspace :index (copy-index disk-index))
+      (put workspace :cache-current (loaded :complete)))
+    ([err]
+      (logging/warn (string "Could not load workspace index cache: " err) [:index])
+      (put workspace :disk-index @{})
+      (put workspace :index @{})
+      (put workspace :cache-current false)))
+  workspace)
+
+(defn partition-indexes [state]
+  (each workspace (values (state :workspaces))
+    (put workspace :index (copy-index (workspace :disk-index)))
+    (each document-uri (keys (workspace :index))
+      (when-let [filepath (uri/file-uri->path document-uri)]
+        (when (not= workspace (server-utils/workspace-for-path state filepath))
+          (put (workspace :index) document-uri nil))))
+    (index/relink workspace))
+  state)
+
+(defn merge-scan-changes [disk-index changes]
+  (eachp [document-uri change] changes
+    (if (= :deleted change)
+      (put disk-index document-uri nil)
+      (put disk-index document-uri change)))
+  (index/relink @{:index disk-index})
+  disk-index)
 
 (defn- progress [token value]
   (transport/write-frame stdout
@@ -78,7 +123,7 @@
   (default workspaces (values (state :workspaces)))
   (def requests @[])
   (each workspace workspaces
-    (unless (workspace :scan)
+    (unless (or (workspace :scan) (workspace :cache-current))
       (def digest (hash (workspace :uri)))
       (def token (string "janet-lsp/index/" digest))
       (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-" digest ".jdn"))
@@ -87,7 +132,8 @@
       (def process
         (try (os/spawn [(janet-executable) indexer-script
                         (workspace :path) output
-                        (string/format "%j" (workspace :exclusions))])
+                        (string/format "%j" (workspace :exclusions))
+                        (workspace :cache-path) (workspace :uri)])
           ([err]
             (logging/warn (string/format "Could not start workspace indexer: %s" err)
                           [:index])
@@ -96,6 +142,7 @@
         (merge-into workspace {:scan-token token
                                :scan-output output
                                :scan process
+                               :scan-changes @{}
                                :progress-started false})
         (when (state :work-done-progress)
           (def id (string "janet-lsp/progress/create/" digest))
@@ -121,11 +168,23 @@
       (def status (os/proc-wait (workspace :scan)))
       (def succeeded (and (= true (result :ok)) (= 0 status)))
       (when succeeded
-        (put workspace :index (result :index)))
+        (def disk-index (result :index))
+        (merge-scan-changes disk-index (workspace :scan-changes))
+        (put workspace :disk-index disk-index)
+        (put workspace :index (copy-index (workspace :disk-index)))
+        (def cached
+          (try
+            (index-cache/write (workspace :cache-path) (workspace :uri)
+                               (workspace :exclusions) disk-index)
+            ([_] false)))
+        (put workspace :cache-current cached))
       (put workspace :scan nil)
       (put workspace :scan-output nil)
+      (put workspace :scan-changes nil)
       (if succeeded
-        (reanalyze-open-documents state [workspace])
+        (do
+          (partition-indexes state)
+          (reanalyze-open-documents state))
         (each document (values (state :documents))
           (when (= workspace (server-utils/document-workspace state document))
             (when-let [snapshot (analysis/current document workspace)]
@@ -151,7 +210,8 @@
     (try (os/proc-kill (workspace :scan) true) ([_] nil)))
   (remove-scan-files workspace)
   (put workspace :scan nil)
-  (put workspace :scan-output nil))
+  (put workspace :scan-output nil)
+  (put workspace :scan-changes nil))
 
 (defn cancel-scan [state params]
   (def token (get params "token"))
@@ -172,14 +232,44 @@
   (each change (get params "changes")
     (def document-uri (get change "uri"))
     (def filepath (uri/file-uri->path document-uri))
-    (def workspace (server-utils/workspace-for-path state filepath))
-    (unless (= workspace (state :standalone-workspace))
+    (def affected
+      (filter |(and filepath
+                    (server-utils/path-in-workspace? filepath ($ :path)))
+              (values (state :workspaces))))
+    (each workspace affected
       (array/push changed-workspaces workspace)
       (case (get change "type")
-        3 (index/remove workspace document-uri)
-        (when (and filepath (os/stat filepath) (string/has-suffix? ".janet" filepath))
-          (try (index/update workspace document-uri (slurp filepath)) ([_] nil))))))
-  (reanalyze-open-documents state (distinct changed-workspaces))
+        3 (do
+            (index/remove @{:index (workspace :disk-index)} document-uri)
+            (when (workspace :scan)
+              (put (workspace :scan-changes) document-uri :deleted)))
+        (if (and filepath (os/stat filepath) (string/has-suffix? ".janet" filepath))
+          (try
+            (let [record (index/analyze document-uri (slurp filepath))]
+              (index/update-record @{:index (workspace :disk-index)}
+                                   document-uri record)
+              (when (workspace :scan)
+                (put (workspace :scan-changes) document-uri record)))
+            ([_]
+              (index/remove @{:index (workspace :disk-index)} document-uri)
+              (when (workspace :scan)
+                (put (workspace :scan-changes) document-uri :deleted))))
+          (do
+            (index/remove @{:index (workspace :disk-index)} document-uri)
+            (when (workspace :scan)
+              (put (workspace :scan-changes) document-uri :deleted)))))))
+  (each workspace (distinct changed-workspaces)
+    (try
+      (do
+        (def cached
+          (index-cache/write (workspace :cache-path) (workspace :uri)
+                             (workspace :exclusions) (workspace :disk-index)))
+        (unless (workspace :scan) (put workspace :cache-current cached)))
+      ([err]
+        (logging/warn (string "Could not update workspace index cache: " err)
+                      [:index]))))
+  (partition-indexes state)
+  (reanalyze-open-documents state)
   [:noresponse state])
 
 (defn initialization-uris [params]
@@ -232,8 +322,10 @@
     (def root-uri (get folder "uri"))
     (when (uri/file-uri->path root-uri)
       (def configured (configure root-uri (state :trusted-workspaces)))
+      (load-cache configured)
       (put (state :workspaces) root-uri configured)
       (array/push added configured)))
+  (partition-indexes state)
   (reanalyze-open-documents state)
   (def requests (array ;(start-scans state added) ;(trust-requests state added)))
   (if (empty? requests) [:noresponse state] [:requests state requests]))
@@ -257,6 +349,9 @@
             (array/push (state :trusted-workspaces) root-uri))
           (def trusted (configure root-uri (state :trusted-workspaces)))
           (put trusted :index (current :index))
+          (put trusted :disk-index (current :disk-index))
+          (put trusted :cache-path (current :cache-path))
+          (put trusted :cache-current (current :cache-current))
           (put trusted :exclusions (current :exclusions))
           (merge-into current trusted)
           (reanalyze-open-documents state)))))

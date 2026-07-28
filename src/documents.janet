@@ -1,5 +1,6 @@
 (import ../libs/fmt)
 (import ./analysis)
+(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./position)
@@ -63,24 +64,38 @@
 (defn- refresh [state document workspace]
   (analysis/refresh document workspace (state :position-encoding)))
 
+(defn- resynchronizing-changes [changes]
+  (when (indexed? changes)
+    (var replacement nil)
+    (eachp [index change] changes
+      (when (nil? (get change "range")) (set replacement index)))
+    (and replacement (array/slice changes replacement))))
+
 (defn on-change [state params]
   (let [document (server-utils/document state params)
         version (get-in params ["textDocument" "version"])
-        current-version (and document (document :version))]
+        current-version (and document (document :version))
+        changes (get params "contentChanges")
+        effective-changes (if (and document (document :desynchronized))
+                            (resynchronizing-changes changes)
+                            changes)]
     (if (or (nil? document)
             (not (integer? version))
-            (and (integer? current-version) (<= version current-version)))
+            (and (integer? current-version) (<= version current-version))
+            (and (document :desynchronized) (nil? effective-changes)))
       [:noresponse state]
       (let [workspace (server-utils/document-workspace state document)
             content (apply-changes (document :content)
-                                   (get params "contentChanges")
+                                   effective-changes
                                    (state :position-encoding))]
         (if (nil? content)
           (do
+            (put document :desynchronized true)
             (logging/warn "Ignoring invalid incremental document change" [:change])
             [:noresponse state])
           (do
-            (merge-into document {:content content :version version})
+            (merge-into document {:content content :version version
+                                  :desynchronized false})
             (def snapshot (refresh state document workspace))
             (if (dyn :push-diagnostics)
               (publish state document (snapshot :diagnostics) version)
@@ -89,7 +104,11 @@
 (defn on-close [state params]
   (if-let [document (server-utils/document state params)]
     (do
+      (def workspace (server-utils/document-workspace state document))
       (put (state :documents) (server-utils/document-uri params) nil)
+      (if-let [record (get-in workspace [:disk-index (document :uri)])]
+        (index/update-record workspace (document :uri) record)
+        (index/remove workspace (document :uri)))
       (if (dyn :push-diagnostics)
         (publish state document @[])
         [:noresponse state]))
@@ -133,6 +152,7 @@
                    :version version
                    :uri document-uri
                    :path filepath
+                   :desynchronized false
                    :snapshots @{}
                    :snapshot-order @[]}
         snapshot (refresh state document workspace)]

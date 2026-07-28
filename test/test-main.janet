@@ -8,6 +8,7 @@
 (import ../src/logging)
 (import ../src/lint)
 (import ../src/index)
+(import ../src/index-cache)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
@@ -141,6 +142,105 @@
   (index/add-generated workspace "file:///tmp/generated-index.janet" generated-env)
   (test (get-in (first (index/definitions workspace "generated-value")) [:generated])
         true))
+
+(deftest "persist and incrementally validate workspace index caches"
+  (def root (string "/tmp/janet-lsp-index-cache-" (os/getpid)))
+  (def cache-directory (string root "-data"))
+  (def source-path (path/join root "main.janet"))
+  (def added-path (path/join root "added.janet"))
+  (def cache-path (path/join cache-directory "index.jdn"))
+  (when (os/stat cache-path) (os/rm cache-path))
+  (when (os/stat cache-directory) (os/rmdir cache-directory))
+  (when (os/stat added-path) (os/rm added-path))
+  (when (os/stat source-path) (os/rm source-path))
+  (when (os/stat root) (os/rmdir root))
+  (os/mkdir root)
+  (spit source-path "(def cached-value 1)\n")
+  (def root-uri (uri/path->file-uri root))
+  (def records (index/scan root index/default-exclusions))
+  (test (index-cache/write cache-path root-uri index/default-exclusions records) true)
+  (def loaded
+    (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (loaded :complete) true)
+  (test (loaded :dirty) @[])
+  (test (map |($ :name) (index/definitions {:index (loaded :index)}))
+        @["cached-value"])
+
+  (def document-uri (uri/path->file-uri source-path))
+  (def forged (parse (slurp cache-path)))
+  (def forged-entry (get-in forged [:entries document-uri]))
+  (put (forged :entries) document-uri
+       (merge forged-entry
+              {:record (merge (forged-entry :record) {:content-hash "forged"})}))
+  (spit cache-path (string/format "%j" forged))
+  (def rejected
+    (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (rejected :complete) false)
+  (test (deep= (rejected :dirty) @[source-path]) true)
+  (index-cache/rebuild cache-path root-uri root index/default-exclusions)
+
+  (test (not= (index/content-hash "(def v000Pay 1)")
+              (index/content-hash "(def v000PbX 1)"))
+        true)
+
+  # Content hashes catch same-size rewrites even when metadata timestamps collide.
+  (spit source-path "(def hacked-value 1)\n")
+  (def changed
+    (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (changed :complete) false)
+  (test (deep= (changed :dirty) @[source-path]) true)
+  (def rebuilt
+    (index-cache/rebuild cache-path root-uri root index/default-exclusions))
+  (test (map |($ :name) (index/definitions {:index rebuilt})) @["hacked-value"])
+
+  (spit added-path "(def added-value 1)\n")
+  (def added (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (added :complete) false)
+  (test (deep= (added :dirty) @[added-path]) true)
+  (index-cache/rebuild cache-path root-uri root index/default-exclusions)
+  (os/rm added-path)
+  (def removed (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (removed :complete) false)
+  (test (removed :dirty) @[])
+
+  (spit cache-path "{:version 999 :entries {}}")
+  (def incompatible
+    (index-cache/load cache-path root-uri root index/default-exclusions))
+  (test (incompatible :complete) false)
+  (test (os/stat cache-path) nil)
+  (os/rm source-path)
+  (os/rmdir root)
+  (os/rmdir cache-directory))
+
+(deftest "partition overlapping workspace indexes by owning root"
+  (def parent-uri "file:///workspace")
+  (def nested-uri "file:///workspace/nested")
+  (def document-uri "file:///workspace/nested/main.janet")
+  (def record (index/analyze document-uri "(def nested-value 1)\n"))
+  (def parent @{:uri parent-uri :path "/workspace"
+                :disk-index @{document-uri record} :index @{}})
+  (def nested @{:uri nested-uri :path "/workspace/nested"
+                :disk-index @{document-uri record} :index @{}})
+  (def state @{:workspaces @{parent-uri parent nested-uri nested}
+               :standalone-workspace @{:path nil :index @{}}})
+  (workspace/partition-indexes state)
+  (test (get (parent :index) document-uri) nil)
+  (test (not (nil? (get (nested :index) document-uri))) true)
+  (put (state :workspaces) nested-uri nil)
+  (workspace/partition-indexes state)
+  (test (not (nil? (get (parent :index) document-uri))) true))
+
+(deftest "replay watcher changes over completed workspace scans"
+  (def changed-uri "file:///workspace/changed.janet")
+  (def deleted-uri "file:///workspace/deleted.janet")
+  (def scanned
+    @{changed-uri (index/analyze changed-uri "(def stale 1)\n")
+      deleted-uri (index/analyze deleted-uri "(def deleted 1)\n")})
+  (def current (index/analyze changed-uri "(def current 2)\n"))
+  (workspace/merge-scan-changes
+    scanned @{changed-uri current deleted-uri :deleted})
+  (test (map |($ :name) (index/definitions {:index scanned})) @["current"])
+  (test (get scanned deleted-uri) nil))
 
 (deftest "warn only for provably unused function parameters"
   (def diagnostics

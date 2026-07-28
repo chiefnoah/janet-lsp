@@ -7,7 +7,7 @@
 (defn document [state params]
   (get-in state [:documents (document-uri params)]))
 
-(defn- path-in-workspace? [filepath root-path]
+(defn path-in-workspace? [filepath root-path]
   (def candidate (if (= :windows (os/which)) (string/ascii-lower filepath) filepath))
   (def root (if (= :windows (os/which)) (string/ascii-lower root-path) root-path))
   (or (= candidate root)
