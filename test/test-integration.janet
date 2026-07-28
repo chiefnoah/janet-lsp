@@ -6,11 +6,19 @@
 (def document-uri (string "file://" (path/abspath "test/resources/format-file-after.txt")))
 (def document-text "(def greeting (string \"hello\"))\ngreeting\n")
 
+(defn message-frame [message]
+  (def body (jayson/encode message))
+  (string "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
+          "Content-Length: " (length body) "\r\n\r\n" body))
+
 (defn write-output [cursor & messages]
   (each message messages
-    (def body (jayson/encode message))
-    (ev/write (cursor :to-lsp)
-              (string "Content-Length: " (length body) "\r\n\r\n" body))))
+    (ev/write (cursor :to-lsp) (message-frame message))))
+
+(defn write-chunked [cursor message]
+  (def frame (message-frame message))
+  (for i 0 (length frame)
+    (ev/write (cursor :to-lsp) (string/slice frame i (inc i)))))
 
 (defn read-output [cursor]
   (def headers @"")
@@ -18,6 +26,8 @@
     (def chunk (ev/read (cursor :from-lsp) 1))
     (unless chunk (error "language server closed stdout in response headers"))
     (buffer/push-string headers chunk))
+  (unless (string/has-prefix? "Content-Length:" headers)
+    (error "language server wrote non-protocol data to stdout"))
 
   (def content-length-line
     (first (filter |(string/has-prefix? "Content-Length:" $)
@@ -91,6 +101,16 @@
   (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
+
+(deftest: with-process "reads chunked and consecutive frames" [cursor]
+  (write-chunked cursor {:jsonrpc "2.0" :id 10 :method "janet/serverInfo" :params {}})
+  (test (get-in (read-output cursor) [:id]) 10)
+
+  (write-output cursor
+                {:jsonrpc "2.0" :id 11 :method "janet/serverInfo" :params {}}
+                {:jsonrpc "2.0" :id 12 :method "janet/serverInfo" :params {}})
+  (test (get-in (read-output cursor) [:id]) 11)
+  (test (get-in (read-output cursor) [:id]) 12))
 
 (deftest: with-process-open "document open publishes diagnostics" [cursor]
   (test (= (get-in (cursor :open) [:params :uri]) document-uri) true)

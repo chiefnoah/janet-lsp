@@ -1,12 +1,45 @@
 (use judge)
 
 (import ../src/main)
+(import ../src/transport)
 (import spork/path)
 
-(deftest "parse-content-length"
-  (test (main/parse-content-length "000:123:456:789") 123)
-  (test (main/parse-content-length "123:456:789") 456)
-  (test (main/parse-content-length "0123:456::::789") 456))
+(deftest "parse LSP headers"
+  (test (transport/parse-headers ["Content-Length: 123\r\n"]) 123)
+  (test (transport/parse-headers ["Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
+                                  "content-length: 42\r\n"])
+        42)
+  (test-error (transport/parse-headers ["Content-Type: application/json"])
+              "malformed LSP headers: missing Content-Length")
+  (test-error (transport/parse-headers ["Content-Length: nope"])
+              "malformed LSP headers: invalid Content-Length")
+  (test-error (transport/parse-headers ["Content-Length: 1" "Content-Length: 2"])
+              "malformed LSP headers: duplicate Content-Length"))
+
+(deftest "read consecutive LSP frames"
+  (def stream (file/temp))
+  (file/write stream "Content-Type: application/json\r\nContent-Length: 3\r\n\r\none"
+                     "Content-Length: 3\r\n\r\ntwo")
+  (file/seek stream :set 0)
+  (test (transport/read-frame stream) @"one")
+  (test (transport/read-frame stream) @"two")
+  (test (transport/read-frame stream) nil)
+  (file/close stream))
+
+(deftest "reject truncated LSP frames"
+  (def stream (file/temp))
+  (file/write stream "Content-Length: 4\r\n\r\ntwo")
+  (file/seek stream :set 0)
+  (test-error (transport/read-frame stream)
+              "truncated LSP body: expected 4 bytes, received 3")
+  (file/close stream))
+
+(deftest "write LSP frames with CRLF"
+  (def stream (file/temp))
+  (transport/write-frame stream "body")
+  (file/seek stream :set 0)
+  (test (file/read stream :all) @"Content-Length: 4\r\n\r\nbody")
+  (file/close stream))
 
 (test (peg/match main/uri-percent-encoding-peg "file:///c%3A/Users/pete/Desktop/code/libmpsse")
       @["file:///c:/Users/pete/Desktop/code/libmpsse"])

@@ -7,6 +7,7 @@
 (import ./lookup)
 (import ./rpc)
 (import ./parser)
+(import ./transport)
 
 (import cmd)
 (import spork/argparse)
@@ -27,9 +28,6 @@
 
 (eachk k jpm-defs
   (match (type k) :symbol (put-in jpm-defs [k :source-map] nil) nil))
-
-(defn parse-content-length [input]
-  (scan-number (string/trim ((string/split ":" input) 1))))
 
 (defn run-diagnostics [uri content]
   (let [items @[]
@@ -417,40 +415,34 @@
         [:noresponse state]))))
 
 (defn write-response [file response]
-  # Write headers
-  (file/write file (string "Content-Length: " (length response) (case (os/which)
-                                                                  :windows "\n\n" "\r\n\r\n")))
-
-  # Write response
-  (file/write file response)
-
-  # Flush response
-  (file/flush file))
+  (transport/write-frame file response))
 
 (defn read-message []
-  (let [content-length-line (file/read stdin :line)
-        _ (file/read stdin :line)
-        input (file/read stdin (parse-content-length content-length-line))]
+  (when-let [input (transport/read-frame stdin)]
     (logging/info (string/format "received json rpc: %s" input) [:rpc :priority])
     (json/decode input)))
 
 (defn message-loop [&named state]
   (logging/info "Loop enter" [:core] 1)
   (logging/dbg (string/format "current state is: %m" state) [:priority])
-  (let [message (read-message)]
-    (logging/dbg (string/format "got: %q" message) [:core])
-    (match (try (handle-message message state) ([err fib] [:error state err fib]))
-      [:ok new-state & response] (do
-                                   (write-response stdout (rpc/success-response (get message "id") ;response))
-                                   (logging/info "successful rpc" [:core] (get message "id"))
-                                   (message-loop :state new-state))
-      [:noresponse new-state] (message-loop :state new-state)
+  (if-let [message (read-message)]
+    (do
+      (logging/dbg (string/format "got: %q" message) [:core])
+      (match (try (handle-message message state) ([err fib] [:error state err fib]))
+        [:ok new-state & response] (do
+                                     (write-response stdout (rpc/success-response (get message "id") ;response))
+                                     (logging/info "successful rpc" [:core] (get message "id"))
+                                     (message-loop :state new-state))
+        [:noresponse new-state] (message-loop :state new-state)
 
-      [:error new-state err fib] (do
-                                   (logging/err (string/format "%m" err) [:core])
-                                   (debug/stacktrace fib err "")
-                                   (message-loop :state new-state))
-      [:exit] (do (file/flush stdout) (ev/sleep 0.1) (os/exit 0)))))
+        [:error new-state err fib] (do
+                                     (logging/err (string/format "%m" err) [:core])
+                                     (debug/stacktrace fib err "")
+                                     (message-loop :state new-state))
+        [:exit] (do (file/flush stdout) (ev/sleep 0.1) (os/exit 0))))
+    (do
+      (file/flush stdout)
+      (os/exit 0))))
 
 (defn find-all-module-files [path &opt search-jpm-tree explicit results]
   (default explicit true)
@@ -483,7 +475,7 @@
        (map |(string "./" $))))
 
 (defn start-language-server []
-  (print "Starting LSP " version "-" commit)
+  (logging/info (string "Starting LSP " version "-" commit) [:core])
   (when (dyn :debug)
     (try (spit "janetlsp.log" "")
       ([_] (logging/err "Tried to write to janetlsp.log txt, but couldn't" [:core]))))
