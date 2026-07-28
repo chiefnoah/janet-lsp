@@ -1,8 +1,11 @@
+(import ./configuration)
 (import ./eval)
+(import ./index)
 (import ./logging)
 (import ./lint)
 (import ./position)
 (import ./signatures)
+(import ./static-diagnostics)
 
 (defn- code [message]
   (cond
@@ -15,7 +18,7 @@
     (string/has-prefix? "runtime error:" message) "janet.runtime"
     "janet.analysis"))
 
-(defn run [filepath content encoding workspace &opt version]
+(defn run [filepath content encoding workspace tree record &opt version]
   (let [items @[]
         [compiler-results env]
         (eval/eval-buffer content
@@ -30,23 +33,46 @@
                              (> (length content) eval/max-source-bytes))
                        @[]
                        (signatures/diagnostics content))
-        results (array ;compiler-results ;lint-results ;call-results)]
+        static-results (if (> (length content) eval/max-source-bytes)
+                         @[]
+                         (static-diagnostics/analyze content tree record workspace env
+                                                     (not (workspace :trusted))))
+        raw-results
+        (map (fn [result]
+               (if (result :code)
+                 result
+                 (merge result {:code (code (or (result :message) ""))})))
+             (array ;compiler-results ;lint-results ;call-results ;static-results))
+        results (keep |(configuration/apply-severity $
+                                                       (workspace :diagnostic-settings))
+                      (configuration/suppress raw-results content))]
     (logging/dbg (string/format "eval-buffer returned: %m" results) [:evaluation])
     (each result results
       (def diagnostic-code (get result :code))
-      (match result
-        {:location [line column] :message message :severity severity}
-        (when-let [location
-                   (position/byte->lsp-position
-                     content
-                     {:line (max 0 (dec line)) :character (max 0 (dec column))}
-                     encoding)]
+      (when-let [message (get result :message)
+                 severity (get result :severity)]
+        (def range
+          (if-let [byte-range (get result :range)
+                   start (position/byte->lsp-position content (byte-range :start)
+                                                        encoding)
+                   end (position/byte->lsp-position content (byte-range :end)
+                                                      encoding)]
+            {:start start :end end}
+            (when-let [[line column] (get result :location)
+                       location
+                       (position/byte->lsp-position
+                         content
+                         {:line (max 0 (dec line)) :character (max 0 (dec column))}
+                         encoding)]
+              {:start location :end location})))
+        (when range
           (array/push items
-                      {:range {:start location :end location}
+                      {:range range
                        :message message
                        :severity severity
                        :source "janet-lsp"
                        :code (or diagnostic-code (code message))
-                       :data {:contentHash (hash content) :version version}}))))
+                       :data {:contentHash (index/content-hash content)
+                              :version version}}))))
     (logging/dbg (string/format "diagnostics: %m" items) [:evaluation])
     [items env]))

@@ -1,4 +1,5 @@
 (import ./analysis)
+(import ./configuration)
 (import ./index)
 (import ./index-cache)
 (import ./logging)
@@ -48,7 +49,10 @@
        flatten
        distinct))
 
-(defn configure [root-uri trusted-workspaces]
+(defn configure [root-uri trusted-workspaces &opt diagnostic-settings
+                 diagnostic-generation]
+  (default diagnostic-settings (configuration/diagnostics {}))
+  (default diagnostic-generation 0)
   (def root-path (uri/file-uri->path root-uri))
   (def trusted (and root-path (has-value? trusted-workspaces root-uri)))
   (var workspace-env (make-env root-env))
@@ -64,6 +68,8 @@
   @{:uri root-uri
     :path root-path
     :trusted (not (not trusted))
+    :diagnostic-settings diagnostic-settings
+    :diagnostic-generation diagnostic-generation
     :trust-prompted false
     :index @{}
     :disk-index @{}
@@ -321,7 +327,9 @@
   (each folder (get-in params ["event" "added"] @[])
     (def root-uri (get folder "uri"))
     (when (uri/file-uri->path root-uri)
-      (def configured (configure root-uri (state :trusted-workspaces)))
+      (def configured
+        (configure root-uri (state :trusted-workspaces)
+                   (state :diagnostic-settings) (state :diagnostic-generation)))
       (load-cache configured)
       (put (state :workspaces) root-uri configured)
       (array/push added configured)))
@@ -347,12 +355,47 @@
         (when-let [current (get (state :workspaces) root-uri)]
           (unless (has-value? (state :trusted-workspaces) root-uri)
             (array/push (state :trusted-workspaces) root-uri))
-          (def trusted (configure root-uri (state :trusted-workspaces)))
+          (def trusted
+            (configure root-uri (state :trusted-workspaces)
+                       (state :diagnostic-settings) (state :diagnostic-generation)))
           (put trusted :index (current :index))
           (put trusted :disk-index (current :disk-index))
           (put trusted :cache-path (current :cache-path))
           (put trusted :cache-current (current :cache-current))
           (put trusted :exclusions (current :exclusions))
           (merge-into current trusted)
-          (reanalyze-open-documents state)))))
+          (reanalyze-open-documents state)))
+      :diagnostic-refresh nil))
   state)
+
+(defn on-configuration-changed [state params]
+  (def settings (configuration/diagnostics (get params "settings" {})))
+  (if (deep= settings (state :diagnostic-settings))
+    [:noresponse state]
+    (do
+      (def generation (inc (state :diagnostic-generation)))
+      (put state :diagnostic-settings settings)
+      (put state :diagnostic-generation generation)
+      (each configured
+            (array ;(values (state :workspaces)) ;[(state :standalone-workspace)])
+        (put configured :diagnostic-settings settings)
+        (put configured :diagnostic-generation generation))
+      (reanalyze-open-documents state)
+      (cond
+        (dyn :push-diagnostics)
+        (let [notifications
+              (map (fn [document]
+                     {:method "textDocument/publishDiagnostics"
+                      :params {:uri (document :uri)
+                               :version (document :version)
+                               :diagnostics (get-in document
+                                                    [:analysis :diagnostics])}})
+                   (values (state :documents)))]
+          [:notifications state notifications])
+
+        (state :diagnostic-refresh-support)
+        (let [id (string "janet-lsp/diagnostic/refresh/" generation)]
+          (put (state :pending-requests) id {:kind :diagnostic-refresh})
+          [:request state {:id id :method "workspace/diagnostic/refresh" :params {}}])
+
+        [:noresponse state]))))

@@ -119,10 +119,66 @@
     (let [workspace (server-utils/document-workspace state document)
           snapshot (or (analysis/current document workspace)
                        (refresh state document workspace))
-          report {:kind "full" :items (snapshot :diagnostics)}]
+          result-id (snapshot :diagnostic-result-id)
+          report (if (= result-id (get params "previousResultId"))
+                   {:kind "unchanged" :resultId result-id}
+                   {:kind "full" :resultId result-id
+                    :items (snapshot :diagnostics)})]
       (logging/message report [:diagnostics])
       [:ok state report])
     [:ok state :null]))
+
+(defn- workspace-document-uris [state]
+  (def found @{})
+  (each workspace (values (state :workspaces))
+    (each document-uri (keys (workspace :index))
+      (put found document-uri true)))
+  (each document-uri (keys (state :documents))
+    (put found document-uri true))
+  (sort (keys found)))
+
+(defn- workspace-snapshot [state document-uri]
+  (if-let [document (get (state :documents) document-uri)]
+    (let [workspace (server-utils/document-workspace state document)]
+      [(or (analysis/current document workspace)
+           (refresh state document workspace))
+       (document :version)])
+    (when-let [content (server-utils/content state document-uri)
+               filepath (uri/file-uri->path document-uri)]
+      (let [workspace (server-utils/workspace-for-path state filepath)
+            restricted (merge workspace {:trusted false})
+            document {:uri document-uri :path filepath :content content :version nil}]
+        [(analysis/build document restricted (state :position-encoding)) :null]))))
+
+(defn on-workspace-diagnostic [state params]
+  (def previous @{})
+  (each item (get params "previousResultIds" @[])
+    (when (and (string? (get item "uri")) (string? (get item "value")))
+      (put previous (get item "uri") (get item "value"))))
+  (def reports @[])
+  (def reported @{})
+  (each document-uri (workspace-document-uris state)
+    (when-let [[snapshot version] (workspace-snapshot state document-uri)]
+      (put reported document-uri true)
+      (def result-id (snapshot :diagnostic-result-id))
+      (array/push
+        reports
+        (if (= result-id (get previous document-uri))
+          {:uri document-uri :version version :kind "unchanged" :resultId result-id}
+          {:uri document-uri :version version :kind "full" :resultId result-id
+           :items (snapshot :diagnostics)}))))
+  (each document-uri (sort (keys previous))
+    (unless (get reported document-uri)
+      (def result-id
+        (string (state :diagnostic-generation) ":removed:"
+                (index/content-hash document-uri)))
+      (array/push
+        reports
+        (if (= result-id (get previous document-uri))
+          {:uri document-uri :version :null :kind "unchanged" :resultId result-id}
+          {:uri document-uri :version :null :kind "full" :resultId result-id
+           :items @[]}))))
+  [:ok state {:items reports}])
 
 (defn on-formatting [state params]
   (def document (server-utils/document state params))

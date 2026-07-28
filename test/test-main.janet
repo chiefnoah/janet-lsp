@@ -9,11 +9,14 @@
 (import ../src/lint)
 (import ../src/index)
 (import ../src/index-cache)
+(import ../src/configuration)
+(import ../src/parser)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
 (import ../src/server-utils)
 (import ../src/signatures)
+(import ../src/static-diagnostics)
 (import ../src/workspace)
 (import spork/json)
 (import spork/path)
@@ -253,6 +256,120 @@
   (test (lint/analyze
           "(defmacro use-value [] 'value)\n(defn run [value] (use-value))\n")
         @[]))
+
+(deftest "report conservative parser-backed diagnostics"
+  (def source
+    (string "(def duplicate 1)\n"
+            "(def duplicate 2)\n"
+            "(defn outer [value]\n"
+            "  (fn [value] value)\n"
+            "  (if false 1 2)\n"
+            "  (break)\n"
+            "  missing)\n"
+            "(quote quoted-missing)\n"))
+  (def tree (parser/syntax-tree source))
+  (def record (index/analyze "file:///safe.janet" source tree))
+  (def found
+    (static-diagnostics/analyze source tree record @{:index @{}} root-env))
+  (def counts (frequencies (map |($ :code) found)))
+  (test (get counts "janet.lint.undefined-symbol") 1)
+  (test (get counts "janet.lint.duplicate-definition") 1)
+  (test (get counts "janet.lint.shadowing") 1)
+  (test (get counts "janet.lint.constant-condition") 1)
+  (test (get counts "janet.lint.unreachable-code") 2)
+  (test (get-in (first (filter |(= "janet.lint.undefined-symbol" ($ :code)) found))
+                [:message])
+        "undefined symbol missing")
+  (def vector-source "(def data [not-a-binding])\n")
+  (def vector-tree (parser/syntax-tree vector-source))
+  (def vector-record (index/analyze "file:///vector.janet" vector-source vector-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze vector-source vector-tree vector-record
+                                         @{:index @{}} root-env))
+        @["undefined symbol not-a-binding"])
+  (def opaque-source
+    "(unknown-macro argument-data (if false branch-a branch-b))\n")
+  (def opaque-tree (parser/syntax-tree opaque-source))
+  (def opaque-record (index/analyze "file:///opaque.janet" opaque-source opaque-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze opaque-source opaque-tree opaque-record
+                                         @{:index @{}} root-env))
+        @["undefined symbol unknown-macro"])
+  (def quoted-source "(quote (if false missing-a missing-b))\n")
+  (def quoted-tree (parser/syntax-tree quoted-source))
+  (def quoted-record (index/analyze "file:///quoted.janet" quoted-source quoted-tree))
+  (test (static-diagnostics/analyze quoted-source quoted-tree quoted-record
+                                    @{:index @{}} root-env)
+        @[])
+  (def forward-source
+    "(future-call opaque-argument)\n(defn future-call [value] value)\n(def first later)\n(def later 1)\n")
+  (def forward-tree (parser/syntax-tree forward-source))
+  (def forward-record
+    (index/analyze "file:///forward.janet" forward-source forward-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze forward-source forward-tree forward-record
+                                         @{:index @{}} root-env))
+        @["undefined symbol future-call" "undefined symbol later"])
+  (def sequential-source "(let [f (fn [x] x) x 1] (f x))\n")
+  (def sequential-tree (parser/syntax-tree sequential-source))
+  (def sequential-record
+    (index/analyze "file:///sequential.janet" sequential-source sequential-tree))
+  (test (static-diagnostics/analyze sequential-source sequential-tree sequential-record
+                                    @{:index @{}} root-env)
+        @[]))
+
+(deftest "resolve imports and suppress configured diagnostic categories"
+  (def module-uri "file:///workspace/module.janet")
+  (def main-uri "file:///workspace/main.janet")
+  (def module-record (index/analyze module-uri "(def exported 1)\n"))
+  (def source
+    (string "(import ./module :as module)\n"
+            "(module/exported)\n"
+            "# janet-lsp: ignore-next-line undefinedSymbol\n"
+            "ignored-name\n"
+            "# janet-lsp: disable constantCondition\n"
+            "(if true 1 2)\n"))
+  (def tree (parser/syntax-tree source))
+  (def record (index/analyze main-uri source tree))
+  (def raw
+    (static-diagnostics/analyze
+      source tree record @{:index @{module-uri module-record}} root-env))
+  (def visible (configuration/suppress raw source))
+  (test (has-value? (map |($ :code) visible) "janet.lint.undefined-symbol") false)
+  (test (has-value? (map |($ :code) visible) "janet.lint.constant-condition") false)
+  (def settings
+    (configuration/diagnostics
+      {"diagnostics" {"unreachableCode" "hint"
+                      "duplicateDefinition" "off"}}))
+  (test (get settings "unreachableCode") 4)
+  (test (get settings "duplicateDefinition") false)
+  (def configured
+    (configuration/apply-severity
+      {:code "janet.lint.unreachable-code" :severity 2} settings))
+  (test (configured :code) "janet.lint.unreachable-code")
+  (test (configured :severity) 4)
+  (test (configuration/apply-severity
+          {:code "janet.lint.duplicate-definition" :severity 1} settings)
+        nil)
+  (def string-directive-source
+    "(def text `# janet-lsp: disable undefinedSymbol`)\nstill-missing\n")
+  (test (map |($ :message)
+             (configuration/suppress
+               [{:code "janet.lint.undefined-symbol"
+                 :message "undefined symbol still-missing"
+                 :location [2 1]}]
+               string-directive-source))
+        @["undefined symbol still-missing"])
+  (def external-source
+    "(import spork/json :as json)\n(json/decode \"{}\")\nlocal-missing\n")
+  (def external-tree (parser/syntax-tree external-source))
+  (def external-record
+    (index/analyze "file:///external.janet" external-source external-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze
+               external-source external-tree external-record
+               @{:index @{} :cache-current true :path nil} root-env))
+        @["undefined symbol local-missing"]))
 
 (deftest "validate safe positional and named calls"
   (def source

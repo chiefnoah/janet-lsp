@@ -131,11 +131,18 @@ not include text edits. Disable the category with:
 
 ### Static Diagnostics
 
-Janet LSP reports parse errors, deterministic unused-parameter warnings, and
-provable same-file positional and named-argument mistakes in all workspaces.
-This includes missing or extra positional arguments, odd named pairs, unknown
-named arguments, and duplicate named arguments. Prefix an intentionally unused
+Janet LSP reports parse errors, deterministic unused-parameter warnings,
+undefined symbols, duplicate top-level definitions, lexical shadowing,
+unreachable code after `break`, literal `if`/`while` conditions, and provable
+same-file positional and named-argument mistakes in all workspaces. Call checks
+include missing or extra positional arguments, odd named pairs, unknown named
+arguments, and duplicate named arguments. Prefix an intentionally unused
 parameter with `_` to suppress its warning.
+
+Static checks do not expand macros or evaluate conditions. Quoted forms, import
+syntax, and arguments to macros or unresolved calls remain opaque, so Janet LSP
+reports only facts it can prove from source. Undefined-symbol checks involving
+imports also wait for a complete workspace index.
 
 Trusted workspace analysis also invokes Janet's compiler. This extends checks
 to unknown symbol reads, imported or generated functions, and macro arity.
@@ -143,6 +150,44 @@ Named parameters introduced by `&named` are optional in Janet; passing an
 unsupported name is a warning, while omitting a named parameter is not an
 error. Compiler-backed checks remain trust-gated because compiling Janet can
 execute macros and imports.
+
+Pull-diagnostic clients receive stable result IDs and unchanged reports from
+both `textDocument/diagnostic` and `workspace/diagnostic`. Workspace reports
+include closed indexed files, while open unsaved content takes precedence over
+disk. Clients advertising diagnostic refresh support receive
+`workspace/diagnostic/refresh` after severity configuration changes.
+
+Diagnostic severities can be changed under `initializationOptions` at startup,
+or under `settings` through `workspace/didChangeConfiguration`. Values may be
+`error`, `warning`, `information`, `hint`, `off`, or the corresponding LSP
+severity number from 1 through 4:
+
+```json
+{
+  "diagnostics": {
+    "undefinedSymbol": "error",
+    "duplicateDefinition": "warning",
+    "shadowing": "hint",
+    "unreachableCode": "warning",
+    "constantCondition": "information",
+    "unusedParameter": "off",
+    "calls": "warning"
+  }
+}
+```
+
+The same object may be nested under `janetLsp.diagnostics`. Additional
+categories are `parse`, `compile`, `runtime`, and `analysis`. Source comments
+can suppress an exact diagnostic code, a category, or all diagnostics:
+
+```janet
+# janet-lsp: ignore-next-line undefinedSymbol
+generated-name
+
+# janet-lsp: disable shadowing, constantCondition
+# janet-lsp: enable shadowing
+# janet-lsp: enable all
+```
 
 ## Getting Started (for Development)
 

@@ -29,6 +29,9 @@
   (test (get-in initialize [:result :serverInfo :name]) "janet-lsp")
   (test (get-in initialize [:result :capabilities :positionEncoding]) "utf-16")
   (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
+  (test (get-in initialize
+                [:result :capabilities :diagnosticProvider :workspaceDiagnostics])
+        true)
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
 
@@ -966,7 +969,152 @@
     (request cursor 3 "textDocument/diagnostic"
              {:textDocument {:uri document-uri}}))
   (test (get-in response [:result :kind]) "full")
-  (test (get-in response [:result :items]) @[]))
+  (test (get-in response [:result :items]) @[])
+  (def unchanged
+    (request cursor 150 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}
+              :previousResultId (get-in response [:result :resultId])}))
+  (test (get-in unchanged [:result :kind]) "unchanged")
+  (test (deep= (get-in unchanged [:result :resultId])
+               (get-in response [:result :resultId]))
+        true))
+
+(deftest "change diagnostic severity configuration and source suppressions"
+  (def cursor
+    (start-lsp {:textDocument {:diagnostic {}}}
+               {:diagnostics {:undefinedSymbol "off"}}))
+  (open-text-document cursor document-uri
+                      "(defn run [unused] missing)\n")
+  (def disabled
+    (request cursor 151 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (has-value? (map |($ :code) (get-in disabled [:result :items]))
+                    "janet.lint.undefined-symbol")
+        false)
+  (test (has-value? (map |($ :code) (get-in disabled [:result :items]))
+                    "janet.lint.unused-parameter")
+        true)
+
+  (notify cursor "workspace/didChangeConfiguration"
+          {:settings {:janetLsp
+                      {:diagnostics {:undefinedSymbol "hint"
+                                     :unusedParameter "off"}}}})
+  (def changed
+    (request cursor 152 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}
+              :previousResultId (get-in disabled [:result :resultId])}))
+  (test (get-in changed [:result :kind]) "full")
+  (def undefined
+    (first (filter |(= "janet.lint.undefined-symbol" ($ :code))
+                   (get-in changed [:result :items]))))
+  (test (undefined :severity) 4)
+  (test (get-in undefined [:range :start :character]) 19)
+  (test (get-in undefined [:range :end :character]) 26)
+  (test (has-value? (map |($ :code) (get-in changed [:result :items]))
+                    "janet.lint.unused-parameter")
+        false)
+
+  (change-text-document
+    cursor document-uri
+    "# janet-lsp: ignore-next-line undefinedSymbol\nmissing\n" 2)
+  (def suppressed
+    (request cursor 153 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in suppressed [:result :items]) @[])
+  (exit-lsp cursor))
+
+(deftest "republish push diagnostics after configuration changes"
+  (def cursor (start-lsp))
+  (open-text-document cursor document-uri "missing-push-name\n")
+  (def initial (read-output cursor))
+  (test (get-in initial [:params :diagnostics 0 :severity]) 1)
+  (notify cursor "workspace/didChangeConfiguration"
+          {:settings {:diagnostics {:undefinedSymbol "information"}}})
+  (def republished (read-output cursor))
+  (test (get-in republished [:method]) "textDocument/publishDiagnostics")
+  (test (get-in republished [:params :diagnostics 0 :severity]) 3)
+  (exit-lsp cursor))
+
+(deftest "configure and suppress parser diagnostic categories"
+  (def cursor
+    (start-lsp {:textDocument {:diagnostic {}}}
+               {:diagnostics {:parse "off"}}))
+  (open-text-document cursor document-uri "(")
+  (def disabled
+    (request cursor 160 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in disabled [:result :items]) @[])
+  (notify cursor "workspace/didChangeConfiguration" {:settings {}})
+  (change-text-document
+    cursor document-uri "# janet-lsp: disable parse\n(" 2)
+  (def suppressed
+    (request cursor 161 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in suppressed [:result :items]) @[])
+  (exit-lsp cursor))
+
+(deftest "request pull diagnostic refresh after configuration changes"
+  (def cursor
+    (start-lsp {:textDocument {:diagnostic {}}
+                :workspace {:diagnostics {:refreshSupport true}}}))
+  (notify cursor "workspace/didChangeConfiguration"
+          {:settings {:diagnostics {:shadowing "hint"}}})
+  (def refresh (read-output cursor))
+  (test (get-in refresh [:method]) "workspace/diagnostic/refresh")
+  (test (length (get-in refresh [:params])) 0)
+  (respond cursor (get refresh :id) :null)
+  (test (get-in (request cursor 157 "janet/serverInfo") [:id]) 157)
+  (exit-lsp cursor))
+
+(deftest "provide full and unchanged workspace diagnostic reports"
+  (def root (temp-directory "janet-lsp-workspace-diagnostics"))
+  (def clean-path (path/join root "clean.janet"))
+  (def broken-path (path/join root "broken.janet"))
+  (spit clean-path "(def clean 1)\n")
+  (spit broken-path "workspace-missing\n")
+  (def root-uri (uri/path->file-uri root))
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 154 "initialize"
+           {:rootUri root-uri
+            :capabilities {:textDocument {:diagnostic {}}}})
+  (def report (request cursor 155 "workspace/diagnostic" {}))
+  (test (length (get-in report [:result :items])) 2)
+  (def broken-uri (uri/path->file-uri broken-path))
+  (def broken
+    (first (filter |(= broken-uri ($ :uri)) (get-in report [:result :items]))))
+  (test (broken :kind) "full")
+  (test (get-in broken [:items 0 :code]) "janet.lint.undefined-symbol")
+  (test (broken :version) :null)
+  (def previous
+    (map |{:uri ($ :uri) :value ($ :resultId)} (get-in report [:result :items])))
+  (def unchanged
+    (request cursor 156 "workspace/diagnostic" {:previousResultIds previous}))
+  (test (all |(= "unchanged" ($ :kind)) (get-in unchanged [:result :items])) true)
+  (os/rm clean-path)
+  (notify cursor "workspace/didChangeWatchedFiles"
+          {:changes [{:uri (uri/path->file-uri clean-path) :type 3}]})
+  (def removed
+    (request cursor 162 "workspace/diagnostic" {:previousResultIds previous}))
+  (def cleared
+    (first (filter |(= (uri/path->file-uri clean-path) ($ :uri))
+                   (get-in removed [:result :items]))))
+  (test (cleared :kind) "full")
+  (test (cleared :version) :null)
+  (test (cleared :items) @[])
+  (open-text-document cursor broken-uri "(def unsaved-clean 1)\n" 2)
+  (def overlaid
+    (request cursor 158 "workspace/diagnostic" {:previousResultIds previous}))
+  (def open-report
+    (first (filter |(= broken-uri ($ :uri)) (get-in overlaid [:result :items]))))
+  (test (open-report :kind) "full")
+  (test (open-report :version) 2)
+  (test (open-report :items) @[])
+  (exit-lsp cursor)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
 
 (deftest: with-process "push diagnostics report zero-based parse positions" [cursor]
   (notify cursor "textDocument/didOpen"
@@ -1140,6 +1288,8 @@
     (request cursor 70 "textDocument/diagnostic"
              {:textDocument {:uri document-uri}}))
   (test (get-in cancelled [:error :code]) -32800)
+  (notify cursor "$/cancelRequest" {:id 159})
+  (test (get-in (request cursor 159 "workspace/diagnostic" {}) [:error :code]) -32800)
   (test (get-in (request cursor 71 "janet/serverInfo") [:id]) 71))
 
 (deftest: with-process-open "completion includes core and local bindings" [cursor]

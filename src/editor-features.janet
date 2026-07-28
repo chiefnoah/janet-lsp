@@ -1,5 +1,6 @@
 (import ./doc)
 (import ./analysis)
+(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./parser)
@@ -199,7 +200,7 @@
   (when (or (empty? only) (has-value? only "quickfix"))
     (each diagnostic (get-in params ["context" "diagnostics"] @[])
       (when (and (= "janet.parse.unclosed-delimiter" (get diagnostic "code"))
-                 (= (hash (document :content))
+                 (= (index/content-hash (document :content))
                     (get-in diagnostic ["data" "contentHash"]))
                  (= (document :version) (get-in diagnostic ["data" "version"])))
         (when-let [closing (missing-delimiters (document :content))]

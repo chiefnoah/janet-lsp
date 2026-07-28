@@ -1,3 +1,4 @@
+(import ./configuration)
 (import ./index)
 (import ./logging)
 (import ./server-meta)
@@ -5,6 +6,7 @@
 (import ./workspace)
 
 (defn initial-state []
+  (def diagnostic-settings (configuration/diagnostics {}))
   @{:documents @{}
     :lifecycle :uninitialized
     :position-encoding "utf-16"
@@ -12,10 +14,15 @@
     :pending-requests @{}
     :cancelled-requests @{}
     :trusted-workspaces @[]
+    :diagnostic-settings diagnostic-settings
+    :diagnostic-generation 0
+    :diagnostic-refresh-support false
     :workspaces @{}
     :standalone-workspace @{:uri nil
                             :path nil
                             :trusted false
+                            :diagnostic-settings diagnostic-settings
+                            :diagnostic-generation 0
                             :index @{}
                             :exclusions index/default-exclusions
                             :env (make-env root-env)
@@ -29,10 +36,19 @@
   (put state :position-encoding encoding)
   (put state :work-done-progress
        (not (not (get-in params ["capabilities" "window" "workDoneProgress"]))))
+  (put state :diagnostic-refresh-support
+       (not (not (get-in params
+                         ["capabilities" "workspace" "diagnostics"
+                          "refreshSupport"]))))
   (put state :inlay-parameter-hints
        (not= false
              (get-in params
                      ["initializationOptions" "inlayHints" "parameterNames"])))
+  (def diagnostic-settings
+    (configuration/diagnostics
+      (get params "initializationOptions" {})))
+  (put state :diagnostic-settings diagnostic-settings)
+  (put (state :standalone-workspace) :diagnostic-settings diagnostic-settings)
   (def trusted
     (or (get-in params ["initializationOptions" "trustedWorkspaces"])
         (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
@@ -40,7 +56,9 @@
   (put state :trusted-workspaces (array ;trusted))
   (each root-uri (workspace/initialization-uris params)
     (when (uri/file-uri->path root-uri)
-      (put (state :workspaces) root-uri (workspace/configure root-uri trusted))))
+      (put (state :workspaces) root-uri
+           (workspace/configure root-uri trusted diagnostic-settings
+                                (state :diagnostic-generation)))))
   (def configured-exclusions
     (get-in params ["initializationOptions" "excludedDirectories"] @[]))
   (each configured (values (state :workspaces))
@@ -55,7 +73,9 @@
      {:positionEncoding encoding
       :completionProvider {:resolveProvider true}
       :textDocumentSync {:openClose true :change 2}
-      :diagnosticProvider {:interFileDependencies true :workspaceDiagnostics false}
+      :diagnosticProvider {:identifier "janet-lsp"
+                           :interFileDependencies true
+                           :workspaceDiagnostics true}
       :hoverProvider true
       :signatureHelpProvider {:triggerCharacters ["(" " "]
                               :retriggerCharacters [" "]}

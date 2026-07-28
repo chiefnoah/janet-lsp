@@ -99,6 +99,7 @@
         "textDocument/didChange" (documents/on-change state params)
         "textDocument/didClose" (documents/on-close state params)
         "textDocument/diagnostic" (documents/on-diagnostic state params)
+        "workspace/diagnostic" (documents/on-workspace-diagnostic state params)
         "textDocument/formatting" (documents/on-formatting state params)
 
         "textDocument/completion" (editor-features/on-completion state params)
@@ -119,6 +120,8 @@
 
         "workspace/didChangeWorkspaceFolders" (workspace/on-folders-changed state params)
         "workspace/didChangeWatchedFiles" (workspace/on-watched-files-changed state params)
+        "workspace/didChangeConfiguration"
+        (workspace/on-configuration-changed state params)
         "window/workDoneProgress/cancel" (workspace/cancel-scan state params)
         "$/cancelRequest" (on-cancel-request state params)
         "$/setTrace" (on-set-trace state params)
@@ -189,6 +192,12 @@
 
     [:requests state requests]
     (do (each request requests (write-request request)) state)
+
+    [:notifications state notifications]
+    (do
+      (each notification notifications
+        (write-message (rpc/notification notification)))
+      state)
 
     [:rpc-error state code message data]
     (do (unless notification? (write-error id code message data)) state)

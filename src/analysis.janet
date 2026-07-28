@@ -6,7 +6,7 @@
 (def max-snapshots 4)
 
 (defn key [version content]
-  (string (if (nil? version) "null" version) ":" (hash content)))
+  (string (if (nil? version) "null" version) ":" (index/content-hash content)))
 
 (defn- semantic-records [record env]
   (def definitions (record :definitions))
@@ -44,16 +44,21 @@
 (defn build [document workspace encoding]
   (let [content (document :content)
         version (document :version)
-        [items env]
-        (diagnostics/run (document :path) content encoding workspace version)
         syntax-tree (try (parser/syntax-tree content) ([_] {:tag :top :value @[]}))
-        record (index/analyze (document :uri) content syntax-tree)]
+        record (index/analyze (document :uri) content syntax-tree)
+        [items env]
+        (diagnostics/run (document :path) content encoding workspace syntax-tree record
+                         version)]
     (index/add-generated-to-record record (document :uri) (document :path) env)
     {:key (key version content)
      :version version
-     :content-hash (hash content)
+     :content-hash (index/content-hash content)
      :workspace-uri (workspace :uri)
      :trusted (workspace :trusted)
+     :diagnostic-generation (workspace :diagnostic-generation)
+     :diagnostic-result-id
+     (string (workspace :diagnostic-generation) ":" (key version content) ":"
+             (index/content-hash (string/format "%j" items)))
      :syntax-tree syntax-tree
      :signatures (signatures/all content)
      :diagnostics items
@@ -67,7 +72,9 @@
   (when (and snapshot
              (= (snapshot :key) (key (document :version) (document :content)))
              (= (snapshot :workspace-uri) (workspace :uri))
-             (= (snapshot :trusted) (workspace :trusted)))
+             (= (snapshot :trusted) (workspace :trusted))
+             (= (snapshot :diagnostic-generation)
+                (workspace :diagnostic-generation)))
     snapshot))
 
 (defn find-snapshot [document snapshot-key]

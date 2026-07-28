@@ -40,6 +40,13 @@ Format for entires is <version-string> - release date.
   buffers and overlapping workspace roots remain isolated from disk records.
 - Rejected incremental edit batches now require full-content resynchronization,
   and completion resolution uses the item's originating versioned snapshot.
+- Restricted analysis now reports conservative undefined symbols, duplicate
+  definitions, lexical shadowing, unreachable code, and literal conditions
+  without expanding macros or executing source. Categories support runtime
+  severity configuration and source-comment suppression directives.
+- Document and workspace pull diagnostics now provide deterministic result IDs,
+  unchanged reports, closed-file analysis, open-buffer overlays, cancellation,
+  and client refresh requests after configuration changes.
 
 ## 0.0.11 - 2026-02-14
 

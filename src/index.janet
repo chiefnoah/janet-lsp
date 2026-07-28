@@ -196,7 +196,7 @@
      (uri/path->file-uri (string base ".janet"))
      (uri/path->file-uri (path/join base "init.janet"))]))
 
-(defn- module-uri [workspace document-uri module]
+(defn module-uri [workspace document-uri module]
   (or (and (string/has-prefix? "." module)
            (first (filter |(get (workspace :index) $)
                           (module-candidates document-uri module))))
