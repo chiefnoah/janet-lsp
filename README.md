@@ -13,7 +13,9 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Hover documentation and active-parameter signature help
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
-- Local and runtime source-map definition lookup
+- Local, imported, indexed, and runtime source-map definition lookup
+- Document/workspace symbols, binding-aware references, and workspace rename
+- Full-document semantic tokens and deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis
 
@@ -24,13 +26,6 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - The network debug console and runtime logging controls
 - Definition lookup outside the current document, which depends on available
   Janet source maps and module metadata
-
-### Planned Features
-
-- Document and workspace symbols
-- Complete imported-symbol definition lookup
-- Find references and workspace rename
-- Semantic tokens, diagnostic code actions, and inlay hints
 
 ## Caveats
 
@@ -119,6 +114,19 @@ not include text edits. Disable the category with:
   }
 }
 ```
+
+### Static Diagnostics
+
+Janet LSP reports parse errors and deterministic unused-parameter warnings in
+all workspaces. Prefix an intentionally unused parameter with `_` to suppress
+the warning.
+
+Trusted workspace analysis also invokes Janet's compiler. This catches unknown
+symbol reads, missing or extra positional arguments, macro arity mismatches,
+and unknown named arguments. Named parameters introduced by `&named` are
+optional in Janet; passing an unsupported name is a warning, while omitting a
+named parameter is not an error. Compiler-backed checks remain trust-gated
+because compiling Janet can execute macros and imports.
 
 ## Getting Started (for Development)
 

@@ -1,108 +1,7 @@
-(import spork/json)
 (import spork/path)
 (import ../src/uri)
 
-(use judge)
-
-(def document-uri (string "file://" (path/abspath "test/resources/format-file-after.txt")))
-(def workspace-uri (string "file://" (os/cwd)))
-(def document-text "(def greeting (string \"hello\"))\ngreeting\n")
-
-(defn message-frame [message]
-  (def body (json/encode message))
-  (string "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
-          "Content-Length: " (length body) "\r\n\r\n" body))
-
-(defn body-frame [body]
-  (string "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
-          "Content-Length: " (length body) "\r\n\r\n" body))
-
-(defn write-output [cursor & messages]
-  (each message messages
-    (ev/write (cursor :to-lsp) (message-frame message))))
-
-(defn write-chunked [cursor message]
-  (def frame (message-frame message))
-  (for i 0 (length frame)
-    (ev/write (cursor :to-lsp) (string/slice frame i (inc i)))))
-
-(defn write-body [cursor body]
-  (ev/write (cursor :to-lsp) (body-frame body)))
-
-(defn read-output [cursor]
-  (def headers @"")
-  (while (not (string/has-suffix? "\r\n\r\n" headers))
-    (def chunk (ev/read (cursor :from-lsp) 1 nil 10))
-    (unless chunk (error "language server closed stdout in response headers"))
-    (buffer/push-string headers chunk))
-  (unless (string/has-prefix? "Content-Length:" headers)
-    (error "language server wrote non-protocol data to stdout"))
-
-  (def content-length-line
-    (first (filter |(string/has-prefix? "Content-Length:" $)
-                   (string/split "\r\n" headers))))
-  (unless content-length-line (error "language server response has no Content-Length"))
-  (def content-length
-    (scan-number (string/trim
-                   (string/slice content-length-line (length "Content-Length:")))))
-
-  (def body @"")
-  (while (< (length body) content-length)
-    (def chunk (ev/read (cursor :from-lsp) (- content-length (length body)) nil 10))
-    (unless chunk (error "language server returned a truncated response"))
-    (buffer/push-string body chunk))
-  (json/decode body true))
-
-(defn request [cursor id method &opt params]
-  (write-output cursor {:jsonrpc "2.0" :id id :method method :params (or params {})})
-  (read-output cursor))
-
-(defn notify [cursor method &opt params]
-  (write-output cursor {:jsonrpc "2.0" :method method :params (or params {})}))
-
-(defn respond [cursor id result]
-  (write-output cursor {:jsonrpc "2.0" :id id :result result}))
-
-(defn completion-labels [cursor id document-uri line character]
-  (def response
-    (request cursor id "textDocument/completion"
-             {:textDocument {:uri document-uri}
-              :position {:line line :character character}}))
-  (map |($ :label) (get-in response [:result :items])))
-
-(defn spawn-lsp []
-  (def janet-lsp
-    (os/spawn [(dyn :executable) "./src/main.janet" "--dont-search-jpm-tree"]
-              :p {:in :pipe :out :pipe}))
-  @{:process janet-lsp
-    :to-lsp (janet-lsp :in)
-    :from-lsp (janet-lsp :out)})
-
-(defn start-lsp [&opt capabilities initialization-options]
-  (default capabilities {})
-  (def cursor (spawn-lsp))
-  (put cursor :initialize
-       (request cursor 0 "initialize"
-                {:rootUri workspace-uri
-                 :capabilities capabilities
-                 :initializationOptions (or initialization-options {})}))
-  cursor)
-
-(defn start-trusted-lsp [&opt capabilities]
-  (start-lsp capabilities {:trustedWorkspaces [workspace-uri]}))
-
-(defn exit-lsp [cursor]
-  (request cursor 99 "shutdown")
-  (notify cursor "exit")
-  (os/proc-wait (cursor :process)))
-
-(defn open-document [cursor]
-  (notify cursor "textDocument/didOpen"
-          {:textDocument {:uri document-uri
-                          :languageId "janet"
-                          :version 1
-                          :text document-text}})
-  (read-output cursor))
+(use judge ./support/lsp-client)
 
 (deftest-type with-process
   :setup start-lsp
@@ -163,12 +62,11 @@
         "janet-lsp")
   (request cursor 99 "shutdown")
   (notify cursor "exit")
-  (os/proc-wait process)
+  (wait-process process)
   (os/proc-kill console true))
 
 (deftest "workspace index scans report progress without blocking initialization"
-  (def root (string "/tmp/janet-lsp-index-progress-" (os/getpid)))
-  (os/mkdir root)
+  (def root (temp-directory "janet-lsp-index-progress"))
   (spit (path/join root "main.janet") "(def indexed-value 1)\n")
   (def root-uri (uri/path->file-uri root))
   (def cursor (spawn-lsp))
@@ -191,12 +89,10 @@
   (test (get-in ended [:params :value :kind]) "end")
   (test (get-in (read-output cursor) [:id]) 101)
   (exit-lsp cursor)
-  (os/rm (path/join root "main.janet"))
-  (os/rmdir root))
+  (remove-tree root))
 
 (deftest "cancel workspace index subprocesses"
-  (def root (string "/tmp/janet-lsp-index-cancel-" (os/getpid)))
-  (os/mkdir root)
+  (def root (temp-directory "janet-lsp-index-cancel"))
   (spit (path/join root "large.janet") (string/repeat "(def indexed-value 1)\n" 20000))
   (def root-uri (uri/path->file-uri root))
   (def cursor (spawn-lsp))
@@ -210,8 +106,7 @@
   (notify cursor "window/workDoneProgress/cancel" {:token token})
   (test (get-in (request cursor 103 "janet/serverInfo") [:id]) 103)
   (exit-lsp cursor)
-  (os/rm (path/join root "large.janet"))
-  (os/rmdir root))
+  (remove-tree root))
 
 (deftest: with-process "convert default UTF-16 feature positions" [cursor]
   (def unicode-text "(do \"😀\" string)\n")
@@ -254,20 +149,19 @@
   (test (get-in (request cursor 31 "initialize" {:capabilities {}}) [:id]) 31)
   (request cursor 32 "shutdown")
   (notify cursor "exit")
-  (test (os/proc-wait (cursor :process)) 0))
+  (test (wait-process (cursor :process)) 0))
 
 (deftest "exit without shutdown is immediate and unsuccessful"
   (def cursor (spawn-lsp))
   (notify cursor "exit")
-  (test (os/proc-wait (cursor :process)) 1))
+  (test (wait-process (cursor :process)) 1))
 
 (deftest "workspace startup requires explicit client trust"
-  (def workspace (string "/tmp/janet-lsp-trust-" (os/getpid)))
+  (def workspace (temp-directory "janet-lsp-trust"))
   (def config-dir (path/join workspace ".janet-lsp"))
   (def startup (path/join config-dir "startup.janet"))
   (def marker (path/join workspace "startup-ran"))
   (def root-uri (string "file://" workspace))
-  (os/mkdir workspace)
   (os/mkdir config-dir)
   (spit startup (string "(spit " (string/format "%q" marker) " \"ran\")\n{}\n"))
 
@@ -283,7 +177,7 @@
   (test (os/stat marker) nil)
   (request untrusted 52 "shutdown")
   (notify untrusted "exit")
-  (os/proc-wait (untrusted :process))
+  (wait-process (untrusted :process))
 
   (def trusted (spawn-lsp))
   (request trusted 53 "initialize"
@@ -295,19 +189,16 @@
   (test (os/stat marker :mode) :file)
   (request trusted 55 "shutdown")
   (notify trusted "exit")
-  (os/proc-wait (trusted :process))
+  (wait-process (trusted :process))
 
-  (os/rm marker)
-  (os/rm startup)
-  (os/rmdir config-dir)
-  (os/rmdir workspace))
+  (remove-tree workspace))
 
 (deftest "scope analysis across workspace folder changes"
-  (def base (string "/tmp/janet-lsp-workspaces-" (os/getpid)))
+  (def base (temp-directory "janet-lsp-workspaces"))
   (def root-a (path/join base "a"))
   (def root-b (path/join base "b"))
   (def root-c (path/join base "c"))
-  (each root [base root-a root-b root-c]
+  (each root [root-a root-b root-c]
     (os/mkdir root))
   (each root [root-a root-b root-c]
     (os/mkdir (path/join root ".janet-lsp")))
@@ -377,15 +268,7 @@
   (test (os/stat marker) nil)
 
   (exit-lsp cursor)
-  (each file [file-a file-b
-              (path/join root-a ".janet-lsp" "startup.janet")
-              (path/join root-b ".janet-lsp" "startup.janet")
-              (path/join root-c ".janet-lsp" "startup.janet")]
-    (os/rm file))
-  (each root [root-a root-b root-c]
-    (os/rmdir (path/join root ".janet-lsp"))
-    (os/rmdir root))
-  (os/rmdir base))
+  (remove-tree base))
 
 (deftest: with-process "reject duplicate initialize and initialized requests" [cursor]
   (test (get-in (request cursor 33 "initialize" {:capabilities {}}) [:error :code])
@@ -405,7 +288,7 @@
   (test (get-in (request cursor 37 "janet/serverInfo") [:error :code]) -32600)
   (notify cursor "initialized")
   (notify cursor "exit")
-  (test (os/proc-wait (cursor :process)) 0))
+  (test (wait-process (cursor :process)) 0))
 
 (deftest: with-process "reads chunked and consecutive frames" [cursor]
   (write-chunked cursor {:jsonrpc "2.0" :id 10 :method "janet/serverInfo" :params {}})
@@ -874,6 +757,13 @@
                             (get-in published [:params :diagnostics 0 :message]))
         true))
 
+(deftest: with-process "report safe unused parameters without workspace trust" [cursor]
+  (open-text-document cursor document-uri "(defn run [unused] 1)\n")
+  (def published (read-output cursor))
+  (test (get-in published [:params :diagnostics 0 :code])
+        "janet.lint.unused-parameter")
+  (test (get-in published [:params :diagnostics 0 :severity]) 2))
+
 (deftest: with-process "offer only current deterministic diagnostic fixes" [cursor]
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri document-uri :languageId "janet"
@@ -934,6 +824,43 @@
                             (get-in bounded-report [:result :items 0 :message]))
         true)
   (test (get-in (request cursor 69 "janet/serverInfo") [:id]) 69)
+  (exit-lsp cursor))
+
+(deftest "diagnose stable function argument mistakes"
+  (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
+  (open-text-document cursor document-uri
+                      "(defn run [required unused &named option] required)\n(run)\n")
+  (def missing
+    (request cursor 124 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (not (not (any? (map |(string/find "expects at least 2 arguments, got 0"
+                                           ($ :message))
+                             (get-in missing [:result :items])))))
+        true)
+  (test (has-value? (map |($ :code) (get-in missing [:result :items]))
+                    "janet.lint.unused-parameter")
+        true)
+
+  (change-text-document cursor document-uri
+                        "(defn run [required &named option] required)\n(run 1 :unknown 2)\n"
+                        2)
+  (def unknown
+    (request cursor 125 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (not (not (any? (map |(string/find "unused named argument :unknown"
+                                           ($ :message))
+                             (get-in unknown [:result :items])))))
+        true)
+
+  (change-text-document cursor document-uri
+                        "(defn run [] missing-name)\n"
+                        3)
+  (def unknown-symbol
+    (request cursor 126 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (string/has-prefix? "compile error: unknown symbol missing-name"
+                            (get-in unknown-symbol [:result :items 0 :message]))
+        true)
   (exit-lsp cursor))
 
 (deftest: with-process "cancel pull diagnostic requests" [cursor]

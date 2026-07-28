@@ -1,6 +1,4 @@
 (import ./lookup)
-(import ./utils)
-
 (varfn references-for [])
 
 (defn- tagged-value

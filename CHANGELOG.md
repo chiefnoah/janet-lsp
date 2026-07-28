@@ -12,6 +12,13 @@ Format for entires is <version-string> - release date.
   imports, and `:flycheck` functions run only for explicitly trusted roots.
 - Added one-session workspace trust prompts and persistent client-managed
   `trustedWorkspaces` initialization options.
+- Added indexed definitions, symbols, references, workspace rename, semantic
+  tokens, deterministic quick fixes, and conservative inlay hints.
+- Added stable unused-parameter warnings; trusted compiler diagnostics report
+  unknown symbols, positional arity errors, and unsupported named arguments.
+- Split the server into focused lifecycle, document, workspace, navigation,
+  editor-feature, diagnostics, and shared state modules, and extracted the
+  timeout-bounded integration client.
 
 ## 0.0.11 - 2026-02-14
 

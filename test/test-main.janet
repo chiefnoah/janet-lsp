@@ -1,12 +1,16 @@
 (use judge)
 
 (import ../src/main)
+(import ../src/editor-features)
 (import ../src/eval)
 (import ../src/logging)
+(import ../src/lint)
 (import ../src/index)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
+(import ../src/server-utils)
+(import ../src/workspace)
 (import spork/json)
 (import spork/path)
 
@@ -33,6 +37,13 @@
   (test (length (index/definitions workspace "value")) 1)
   (index/remove workspace "file:///workspace/main.janet")
   (test (index/definitions workspace "value") @[]))
+
+(deftest "warn only for provably unused function parameters"
+  (def diagnostics
+    (lint/analyze "(defn run [used unused _ignored] (+ used 1))\n"))
+  (test (map |($ :message) diagnostics) @["unused parameter unused"])
+  (test (get-in diagnostics [0 :code]) "janet.lint.unused-parameter")
+  (test (lint/analyze "(defn run [{:keys [value]}] value)\n") @[]))
 
 (deftest "convert negotiated position encodings"
   (def line "aé☃😀é")
@@ -170,7 +181,7 @@
                     [@[:a 1] :array] # [(coro) :fiber]
                     ['anil :nil]])
 
-  (test (map (juxt 1 |(main/binding-to-lsp-item (first $) eval-env)) test-cases)
+  (test (map (juxt 1 |(editor-features/binding-to-lsp-item (first $) eval-env)) test-cases)
         @[[:symbol {:kind 12 :label hello}]
           [:boolean {:kind 6 :label true}]
           [:function {:kind 3 :label @%}]
@@ -188,7 +199,7 @@
           [:nil {:kind 12 :label anil}]]))
 
 (deftest "find module files without machine-specific paths"
-  (def files (main/find-all-module-files (path/join (os/cwd) "src")))
+  (def files (workspace/find-all-module-files (path/join (os/cwd) "src")))
   (def basenames (map path/basename files))
   (test (has-value? basenames "main.janet") true)
   (test (has-value? basenames "parser.janet") true)
@@ -198,7 +209,7 @@
         true))
 
 (deftest "find unique module paths"
-  (def paths (main/find-unique-paths
+  (def paths (workspace/find-unique-paths
                [(path/join (os/cwd) "src/main.janet")
                 (path/join (os/cwd) "src/parser.janet")
                 (path/join (os/cwd) "example/init.janet")]))
@@ -213,19 +224,19 @@
   (def state {:workspaces {"root" {:uri "root" :path root}
                            "nested" {:uri "nested" :path nested}}
               :standalone-workspace {:uri "standalone" :path nil}})
-  (test (get (main/workspace-for-path state (path/join nested "main.janet")) :uri)
+  (test (get (server-utils/workspace-for-path state (path/join nested "main.janet")) :uri)
         "nested")
-  (test (get (main/workspace-for-path state (path/join root "main.janet")) :uri)
+  (test (get (server-utils/workspace-for-path state (path/join root "main.janet")) :uri)
         "root")
-  (test (get (main/workspace-for-path state (path/join (os/cwd) "other" "main.janet")) :uri)
+  (test (get (server-utils/workspace-for-path state (path/join (os/cwd) "other" "main.janet")) :uri)
         "standalone"))
 
 (deftest "derive initialization workspace roots"
-  (test (main/initialization-workspace-uris
+  (test (workspace/initialization-uris
           {"rootUri" "file:///root"
            "workspaceFolders" [{"uri" "file:///a"} {"uri" "file:///b"}]})
         @["file:///a" "file:///b"])
-  (test (main/initialization-workspace-uris {"rootUri" "file:///root"})
+  (test (workspace/initialization-uris {"rootUri" "file:///root"})
         ["file:///root"])
-  (test (first (main/initialization-workspace-uris {"rootPath" "/tmp/root"}))
+  (test (first (workspace/initialization-uris {"rootPath" "/tmp/root"}))
         "file:///tmp/root"))

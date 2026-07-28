@@ -1,4 +1,3 @@
-(use judge)
 (import ./logging)
 
 (varfn to-index [])

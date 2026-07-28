@@ -50,11 +50,6 @@
            definition :in (record :definitions)
            :when (or (nil? name) (= name (definition :name)))] definition))
 
-(defn references [workspace name]
-  (catseq [record :in (values (workspace :index))
-           reference :in (record :references)
-           :when (= name (reference :name))] reference))
-
 (defn scan [root exclusions]
   (def records @{})
   (def pending @[root])

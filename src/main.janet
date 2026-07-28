@@ -1,1060 +1,61 @@
 (import spork/json)
-(import ../libs/fmt)
-(import ./utils)
-(import ./doc)
-(import ./eval)
-(import ./index)
-(import ./logging)
-(import ./lookup)
-(import ./rpc)
-(import ./parser)
-(import ./position)
-(import ./transport)
-(import ./uri)
-
 (import cmd)
-(import spork/argparse)
-(import spork/path)
-(import spork/rpc)
+(import spork/rpc :as debug-rpc)
 
-(use judge)
-
-(def version "0.0.12")
-(def semantic-token-types
-  ["namespace" "type" "function" "macro" "variable" "parameter"
-   "keyword" "string" "number" "comment" "operator"])
-(def semantic-token-modifiers ["declaration" "definition" "readonly" "defaultLibrary"])
-(def indexer-script (path/join (path/dirname (dyn :current-file)) "indexer.janet"))
-(defn janet-executable []
-  (def executable (dyn :executable))
-  (or (and (os/stat executable) (path/abspath executable))
-      (first (filter os/stat
-                     (map |(path/join $ executable)
-                          (string/split (if (= :windows (os/which)) ";" ":")
-                                        (or (os/getenv "PATH") "")))))
-      executable))
-(def commit
-  (with [proc (os/spawn ["git" "rev-parse" "--short" "HEAD"] :xp {:out :pipe})]
-    (let [[out] (ev/gather
-                  (ev/read (proc :out) :all)
-                  (os/proc-wait proc))]
-      (if out (string/trimr out) ""))))
+(import ./documents)
+(import ./editor-features)
+(import ./lifecycle)
+(import ./logging)
+(import ./navigation)
+(import ./rpc)
+(import ./server-meta)
+(import ./server-utils)
+(import ./transport)
+(import ./workspace)
 
 (def jpm-defs (require "../libs/jpm-defs"))
 
-(eachk k jpm-defs
-  (match (type k) :symbol (put-in jpm-defs [k :source-map] nil) nil))
-
-(defn run-diagnostics [filepath content encoding workspace]
-  (let [items @[]
-        [diagnostics env]
-        (eval/eval-buffer content
-                          (or filepath "untitled.janet")
-                          {:trusted (workspace :trusted)
-                           :base-env (workspace :env)
-                           :unique-paths (workspace :unique-paths)})]
-
-    (logging/dbg (string/format "`eval-buffer` returned: %m" diagnostics) [:evaluation])
-
-    (each res diagnostics
-      (match res
-        {:location [line col] :message message :severity severity}
-        (when-let [lsp-position
-                   (position/byte->lsp-position
-                     content {:line (max 0 (dec line))
-                              :character (max 0 (dec col))} encoding)]
-          (array/push items
-                      @{:range {:start lsp-position :end lsp-position}
-                       :message message
-                       :severity severity
-                       :source "janet-lsp"
-                       :code (cond
-                               (string/has-prefix? "parse error:" message)
-                               (if (string/find "unexpected end of source" message)
-                                 "janet.parse.unclosed-delimiter" "janet.parse")
-                               (string/has-prefix? "compile warning:" message) "janet.compile.warning"
-                               (string/has-prefix? "compile error:" message) "janet.compile"
-                               (string/has-prefix? "runtime error:" message) "janet.runtime"
-                               "janet.analysis")
-                       :data @{:contentHash (hash content)}}))))
-
-    (logging/info (string/format "`run-diagnostics` is returning these errors: %m" items) [:evaluation])
-    (logging/dbg (string/format "`run-diagnostics` is returning this eval-context: %m" env) [:evaluation])
-    [items env]))
-
-(defn document-key [uri]
-  uri)
-
-(defn- path-in-workspace? [filepath root-path]
-  (def candidate (if (= :windows (os/which)) (string/ascii-lower filepath) filepath))
-  (def root (if (= :windows (os/which)) (string/ascii-lower root-path) root-path))
-  (or (= candidate root)
-      (string/has-prefix? (string root (if (string/has-suffix? "/" root) "" "/"))
-                          candidate)))
-
-(defn workspace-for-path [state filepath]
-  (var owner nil)
-  (when filepath
-    (each workspace (values (state :workspaces))
-      (when (and (path-in-workspace? filepath (workspace :path))
-                 (or (nil? owner)
-                     (> (length (workspace :path)) (length (owner :path)))))
-        (set owner workspace))))
-  (or owner (state :standalone-workspace)))
-
-(defn document-workspace [state document]
-  (workspace-for-path state (document :path)))
-
-(defn request-byte-position [state params content]
-  (position/lsp->byte-position content (get params "position")
-                               (state :position-encoding)))
-
-(defn on-document-change
-  ``
-  Handler for the ["textDocument/didChange"](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange) event.
-  
-  Params contains the new state of the document.
-  ``
-  [state params]
-  (let [client-uri (get-in params ["textDocument" "uri"])
-        uri (document-key client-uri)
-        document (get-in state [:documents uri])
-        version (get-in params ["textDocument" "version"])
-        current-version (and document (document :version))]
-    (if (or (nil? document)
-            (and (number? version)
-                 (number? current-version)
-                 (<= version current-version)))
-      [:noresponse state]
-      (let [workspace (document-workspace state document)
-            content (get-in params ["contentChanges" 0 "text"])
-            [diagnostics env] (run-diagnostics (document :path) content
-                                               (state :position-encoding)
-                                               workspace)]
-        (each diagnostic diagnostics (put-in diagnostic [:data :version] version))
-        (put document :content content)
-        (put document :version version)
-        (put document :eval-env env)
-        (index/update workspace (document :uri) content)
-        (if (dyn :push-diagnostics)
-          (let [message {:method "textDocument/publishDiagnostics"
-                         :params {:uri (document :uri)
-                                  :version version
-                                  :diagnostics diagnostics}}]
-            (logging/message message [:diagnostics])
-            [:ok state message :notify true])
-          [:noresponse state])))))
-
-(defn on-document-close [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        document (get-in state [:documents uri])]
-    (if (nil? document)
-      [:noresponse state]
-      (do
-        (put (state :documents) uri nil)
-        (if (dyn :push-diagnostics)
-          (let [message {:method "textDocument/publishDiagnostics"
-                         :params {:uri (document :uri)
-                                  :diagnostics @[]}}]
-            (logging/message message [:diagnostics])
-            [:ok state message :notify true])
-          [:noresponse state])))))
-
-(defn on-document-diagnostic [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        document (get-in state [:documents uri])]
-    (if (nil? document)
-      [:ok state :null]
-      (let [workspace (document-workspace state document)
-            [diagnostics env] (run-diagnostics (document :path) (document :content)
-                                               (state :position-encoding)
-                                               workspace)
-            message {:kind "full"
-                     :items diagnostics}]
-        (each diagnostic diagnostics
-          (put-in diagnostic [:data :version] (document :version)))
-        (put document :eval-env env)
-        (logging/message message [:diagnostics])
-        [:ok state message]))))
-
-(defn on-document-formatting [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        content (get-in state [:documents uri :content])]
-    # Janet formatting is canonical; LSP indentation options are advisory.
-    (logging/dbg (string/format "formatting options: %m" (get params "options"))
-                 [:formatting])
-    (match (try [:ok (freeze (fmt/format (string/slice content)))]
-             ([err] [:error err]))
-      [:error err]
-      (do
-        (logging/warn (string/format "formatter failed: %s" err) [:formatting])
-        [:ok state :null])
-      [:ok new-content]
-      (do
-    (logging/info (string/format "old content: %m" content) [:formatting])
-    (logging/info (string/format "new content: %m" new-content) [:formatting])
-    (logging/info (string/format "formatting changed something: %m" (not= content new-content)) [:formatting])
-    (if (= content new-content)
-      (do
-        (logging/info "No changes" [:formatting])
-        [:ok state @[]])
-      (do
-        (let [message [{:range {:start {:line 0 :character 0}
-                                :end (position/document-end content
-                                                            (state :position-encoding))}
-                        :newText new-content}]]
-          (logging/message message [:formatting])
-          [:ok state message])))))))
-
-(defn on-document-open [state params]
-  (let [content (get-in params ["textDocument" "text"])
-        client-uri (get-in params ["textDocument" "uri"])
-        uri (document-key client-uri)
-        version (get-in params ["textDocument" "version"])
-        filepath (uri/file-uri->path client-uri)
-        workspace (workspace-for-path state filepath)
-        [diagnostics env] (run-diagnostics filepath content
-                                           (state :position-encoding)
-                                           workspace)]
-    (each diagnostic diagnostics (put-in diagnostic [:data :version] version))
-    (put-in state [:documents uri] @{:content content
-                                     :version version
-                                     :uri client-uri
-                                     :path filepath
-                                     :eval-env env})
-    (index/update workspace client-uri content)
-    (logging/info "Document opened" [:open] 1)
-    (if (dyn :push-diagnostics)
-      (let [message {:method "textDocument/publishDiagnostics"
-                     :params {:uri client-uri
-                              :version version
-                              :diagnostics diagnostics}}]
-        (logging/message message [:diagnostics])
-        [:ok state message :notify true])
-      [:noresponse state])))
-
-(defmacro binding-to-lsp-item
-  "Takes a binding and returns a CompletionItem"
-  [name eval-env]
-  (with-syms [$name $eval-env]
-    ~(let [,$name ,name
-           ,$eval-env ,eval-env
-           s (get-in ,$eval-env [,$name :value] ,$name)]
-       (,logging/dbg (string/format "binding-to-lsp-item: s is %m" s) [:completion] 3)
-       {:label ,$name :kind
-        (case (type s)
-          :symbol 12 :boolean 6
-          :function 3 :cfunction 3
-          :string 6 :buffer 6
-          :number 6 :keyword 6
-          :core/file 17 :core/peg 6
-          :struct 6 :table 6
-          :tuple 6 :array 6
-          :fiber 6 :nil 6
-          6)})))
-
-(defn on-completion [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        eval-env (get-in state [:documents uri :eval-env])
-        content (get-in state [:documents uri :content])
-        location (request-byte-position state params content)
-        word (lookup/word-at location content)
-        prefix (string/slice (word :word) 0
-                             (max 0 (- (location :character)
-                                       (first (word :range)))))
-        local-bindings (parser/get-syms-at-loc location content)
-        bindings (seq [bind :in (all-bindings eval-env)]
-                   (binding-to-lsp-item bind eval-env))
-        deduped-bindings (utils/concat-dedup-by-label local-bindings bindings)
-        matching (if (empty? prefix)
-                   deduped-bindings
-                   (filter |(string/has-prefix? prefix (string ($ :label)))
-                           deduped-bindings))
-        limit 2000
-        items (array/slice matching 0 (min limit (length matching)))
-        message {:isIncomplete (> (length matching) limit)
-                 :items (map |(merge $ {:data {:uri uri
-                                               :version (get-in state [:documents uri :version])
-                                               :binding (string ($ :label))}})
-                             items)}]
-    (logging/message message [:completion] 1)
-    [:ok state message]))
-
-(defn on-completion-item-resolve [state params]
-  (def lbl (or (get-in params ["data" "binding"]) (get params "label")))
-  (def document-uri (get-in params ["data" "uri"]))
-  (def eval-env (get-in state [:documents document-uri :eval-env]))
-
-  (let [message (merge params
-                       {"documentation"
-                        {:kind "markdown"
-                         :value (doc/my-doc*
-                                  (symbol lbl)
-                                  (or eval-env (make-env root-env)))}})]
-    (logging/message message [:completion])
-    [:ok state message]))
-
-(defn on-document-hover [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        content (get-in state [:documents uri :content])
-        eval-env (get-in state [:documents uri :eval-env])
-        {:line line :character character} (request-byte-position state params content)
-        {:word hover-word :range [start end]} (lookup/word-at {:line line :character character} content)
-        hover-text (doc/my-doc* (symbol hover-word) eval-env)
-        _ (logging/log (string/format "on-document-hover: hover-text is %m" hover-text) [:hover])
-        start-position (position/byte->lsp-position
-                         content {:line line :character start} (state :position-encoding))
-        end-position (position/byte->lsp-position
-                       content {:line line :character end} (state :position-encoding))
-        message (if (and hover-word hover-text start-position end-position)
-                  {:contents {:kind "markdown"
-                              :value hover-text}
-                   :range {:start start-position :end end-position}}
-                  :null)]
-    (logging/message message [:hover])
-    [:ok state message]))
-
-(defn on-document-signature-help [state params]
-  (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        content (get-in state [:documents uri :content])
-        eval-env (get-in state [:documents uri :eval-env])
-        location (request-byte-position state params content)
-        context (lookup/call-context location content)
-        callee (and context (context :callee))
-        signature (and callee (doc/get-signature (symbol callee) eval-env))]
-    (if (or (nil? context) (nil? signature))
-      [:ok state :null]
-      (let [inside (string/trim signature "()")
-            tokens (filter |(not (empty? $)) (string/split " " inside))
-            parameters (map |{:label $} (array/slice tokens 1))
-            active (if (empty? parameters)
-                     0
-                     (min (context :active-parameter) (dec (length parameters))))
-            message {:signatures [{:label signature
-                                   :documentation {:kind "markdown"
-                                                   :value (doc/my-doc* (symbol callee) eval-env)}
-                                   :parameters parameters}]
-                     :activeSignature 0
-                     :activeParameter active}]
-        (logging/message message [:signature])
-        [:ok state message]))))
-
-(defn find-all-module-files [path &opt search-jpm-tree explicit results]
-  (default explicit true)
-  (default results @[])
-  (case (os/stat path :mode)
-    :directory (when (or explicit
-                         search-jpm-tree
-                         (not= (path/basename path) "jpm_tree"))
-                 (each entry (os/dir path)
-                   (find-all-module-files (path/join path entry)
-                                          search-jpm-tree false results)))
-    :file (when (or explicit (not= (path/basename path) "project.janet"))
-            (when (or (string/has-suffix? ".janet" path)
-                      (string/has-suffix? ".jimage" path)
-                      (string/has-suffix? ".so" path))
-              (array/push results path))))
-  results)
-
-(defn find-unique-paths [paths]
-  (->> (seq [found-path :in paths]
-         (if (= (path/basename found-path) "init.janet")
-           [(path/join (path/dirname found-path)
-                       (string ":all:" (path/ext found-path)))
-            (path/join (path/dirname found-path) "init.janet")]
-           [(path/join (path/dirname found-path)
-                       (string ":all:" (path/ext found-path)))]))
-       flatten
-       distinct))
-
-(defn configure-workspace [root-uri trusted-workspaces]
-  (def root-path (uri/file-uri->path root-uri))
-  (def trusted (and root-uri root-path (has-value? trusted-workspaces root-uri)))
-  (var workspace-env (make-env root-env))
-  (def unique-paths
-    (if trusted
-      (find-unique-paths
-        (find-all-module-files root-path (not ((dyn :opts) :dont-search-jpm-tree))))
-      @[]))
-  (when trusted
-    (def startup-path (path/join root-path ".janet-lsp" "startup.janet"))
-    (when (os/stat startup-path)
-      (set workspace-env (dofile startup-path :env workspace-env))))
-  @{:uri root-uri
-    :path root-path
-    :trusted (not (not trusted))
-    :trust-prompted false
-    :index @{}
-    :exclusions index/default-exclusions
-    :env workspace-env
-    :unique-paths unique-paths})
-
-(defn start-index-scans [state]
-  (when (state :work-done-progress)
-    (each workspace (values (state :workspaces))
-      (unless (workspace :scan)
-        (def token (string "janet-lsp/index/" (hash (workspace :uri))))
-        (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-"
-                            (hash (workspace :uri)) ".jdn"))
-        (when (os/stat output) (os/rm output))
-        (put workspace :scan-token token)
-        (put workspace :scan-output output)
-        (put workspace :scan
-             (os/spawn [(janet-executable) indexer-script
-                        (workspace :path)
-                        output (string/format "%j" (workspace :exclusions))]))
-        (transport/write-frame stdout (rpc/notification
-                                        {:method "$/progress"
-                                         :params {:token token :value {:kind "begin"
-                                                                       :title "Index Janet workspace"}}})))))
-  nil)
-
-(defn refresh-index-scans [state]
-  (each workspace (values (state :workspaces))
-    (when-let [output (workspace :scan-output)
-               found (os/stat output)]
-      (put workspace :index (parse (slurp output)))
-      (os/rm output)
-      (os/proc-wait (workspace :scan))
-      (put workspace :scan nil)
-      (put workspace :scan-output nil)
-      (each document (values (state :documents))
-        (when (= workspace (document-workspace state document))
-          (index/update workspace (document :uri) (document :content))))
-      (when (state :work-done-progress)
-        (transport/write-frame stdout (rpc/notification
-                                        {:method "$/progress"
-                                         :params {:token (workspace :scan-token)
-                                                  :value {:kind "end" :message "Index complete"}}})))))
-  state)
-
-(defn on-work-done-progress-cancel [state params]
-  (def token (get params "token"))
-  (each workspace (values (state :workspaces))
-    (when (and (= token (workspace :scan-token)) (workspace :scan))
-      (try (os/proc-kill (workspace :scan) true) ([_] nil))
-      (each output [(workspace :scan-output) (string (workspace :scan-output) ".tmp")]
-        (when (and output (os/stat output)) (os/rm output)))
-      (put workspace :scan nil)
-      (put workspace :scan-output nil)))
-  [:noresponse state])
-
-(defn stop-index-scans [state]
-  (each workspace (values (state :workspaces))
-    (when (workspace :scan)
-      (try (os/proc-kill (workspace :scan) true) ([_] nil))
-      (put workspace :scan nil)))
-  state)
-
-(defn on-watched-files-changed [state params]
-  (each change (get params "changes")
-    (def document-uri (get change "uri"))
-    (def filepath (uri/file-uri->path document-uri))
-    (def workspace (workspace-for-path state filepath))
-    (unless (= workspace (state :standalone-workspace))
-      (case (get change "type")
-        3 (index/remove workspace document-uri)
-        (when (and filepath (os/stat filepath) (string/has-suffix? ".janet" filepath))
-          (try (index/update workspace document-uri (slurp filepath)) ([_] nil))))))
-  [:noresponse state])
-
-(defn initialization-workspace-uris [params]
-  (def folders (get params "workspaceFolders"))
-  (cond
-    (indexed? folders) (map |(get $ "uri") folders)
-    (get params "rootUri") [(get params "rootUri")]
-    (get params "rootPath") [(uri/path->file-uri (get params "rootPath"))]
-    @[]))
-
-(defn trust-requests [state workspaces]
-  (def requests @[])
-  (each workspace workspaces
-    (when (and (not (workspace :trusted))
-               (not (workspace :trust-prompted))
-               (workspace :path))
-      (put workspace :trust-prompted true)
-      (def id (string "janet-lsp/workspaceTrust/" (hash (workspace :uri))))
-      (put-in state [:pending-requests id]
-              {:kind :workspace-trust :uri (workspace :uri)})
-      (array/push requests
-                  {:id id
-                   :method "window/showMessageRequest"
-                   :params {:type 2
-                            :message (string "Trust Janet workspace " (workspace :path)
-                                             "? Trusted analysis can execute workspace code.")
-                            :actions [{:title "Trust for This Session"}
-                                      {:title "Keep Restricted"}]}})))
-  requests)
-
-(defn reanalyze-open-documents [state]
-  (each document (values (state :documents))
-    (def workspace (document-workspace state document))
-    (def [_ env]
-      (run-diagnostics (document :path) (document :content)
-                       (state :position-encoding) workspace))
-    (put document :eval-env env))
-  state)
-
-(defn on-initialize
-  `` 
-  Called by the LSP client to recieve a list of capabilities
-  that this server provides so the client knows what it can request.
-  ``
-  [state params]
-  (logging/info (string/format "on-initialize called with these params: %m" params) [:initialize])
-  (put state :lifecycle :initialized)
-  (def position-encodings (get-in params ["capabilities" "general" "positionEncodings"] @[]))
-  (def position-encoding (if (has-value? position-encodings "utf-8") "utf-8" "utf-16"))
-  (put state :position-encoding position-encoding)
-  (put state :work-done-progress
-       (not (not (get-in params ["capabilities" "window" "workDoneProgress"]))))
-  (put state :inlay-parameter-hints
-       (not= false (get-in params ["initializationOptions" "inlayHints" "parameterNames"])))
-  (def trusted-workspaces
-    (or (get-in params ["initializationOptions" "trustedWorkspaces"])
-        (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
-        @[]))
-  (put state :trusted-workspaces (array ;trusted-workspaces))
-  (each root-uri (initialization-workspace-uris params)
-    (when (uri/file-uri->path root-uri)
-      (put-in state [:workspaces root-uri]
-              (configure-workspace root-uri trusted-workspaces))))
-  (def configured-exclusions
-    (get-in params ["initializationOptions" "excludedDirectories"] @[]))
-  (each workspace (values (state :workspaces))
-    (put workspace :exclusions
-         (distinct (array ;index/default-exclusions ;configured-exclusions))))
-  (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
-    (setdyn :push-diagnostics false)
-    (setdyn :push-diagnostics true))
-
-  (let [message {:capabilities {:positionEncoding position-encoding
-                                :completionProvider {:resolveProvider true}
-                                :textDocumentSync {:openClose true
-                                                   :change 1 # send the Full document https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentSyncKind
-}
-                                :diagnosticProvider {:interFileDependencies true
-                                                     :workspaceDiagnostics false}
-                                :hoverProvider true
-                                :signatureHelpProvider {:triggerCharacters ["(" " "]
-                                                        :retriggerCharacters [" "]}
-                                :documentFormattingProvider true
-                                :definitionProvider true
-                                :documentSymbolProvider true
-                                :workspaceSymbolProvider true
-                                :referencesProvider true
-                                :renameProvider {:prepareProvider true}
-                                :semanticTokensProvider
-                                {:legend {:tokenTypes semantic-token-types
-                                          :tokenModifiers semantic-token-modifiers}
-                                 :full true}
-                                :codeActionProvider {:codeActionKinds ["quickfix"]}
-                                :inlayHintProvider (state :inlay-parameter-hints)
-                                :workspace {:workspaceFolders
-                                            {:supported true
-                                             :changeNotifications true}}}
-                 :serverInfo {:name "janet-lsp"
-                              :version version
-                              :commit commit}}]
-    (logging/message message [:initialize])
-    [:ok state message]))
-
-(defn on-initialized [state]
-  (start-index-scans state)
-  (def requests (trust-requests state (values (state :workspaces))))
-  (if (empty? requests)
-    [:noresponse state]
-    [:requests state requests]))
-
-(defn on-workspace-folders-changed [state params]
-  (each folder (get-in params ["event" "removed"] @[])
-    (def root-uri (get folder "uri"))
-    (put (state :workspaces) root-uri nil)
-    (eachp [id pending] (state :pending-requests)
-      (when (= root-uri (pending :uri))
-        (put (state :pending-requests) id nil))))
-  (def added @[])
-  (each folder (get-in params ["event" "added"] @[])
-    (def root-uri (get folder "uri"))
-    (when (uri/file-uri->path root-uri)
-      (def workspace (configure-workspace root-uri (state :trusted-workspaces)))
-      (put-in state [:workspaces root-uri] workspace)
-      (array/push added workspace)))
-  (reanalyze-open-documents state)
-  (def requests (trust-requests state added))
-  (if (empty? requests)
-    [:noresponse state]
-    [:requests state requests]))
-
-(defn handle-client-response [message state]
-  (def id (get message "id"))
-  (def pending (get-in state [:pending-requests id]))
-  (when pending
-    (put (state :pending-requests) id nil)
-    (when (and (= :workspace-trust (pending :kind))
-               (= "Trust for This Session" (get-in message ["result" "title"])))
-      (def root-uri (pending :uri))
-      (when (get-in state [:workspaces root-uri])
-        (unless (has-value? (state :trusted-workspaces) root-uri)
-          (array/push (state :trusted-workspaces) root-uri))
-        (put-in state [:workspaces root-uri]
-                (configure-workspace root-uri (state :trusted-workspaces)))
-        (reanalyze-open-documents state))))
-  state)
-
-(defn on-shutdown
-  ``
-  Called by the LSP client to request that the server shut down.
-  ``
-  [state params]
-  (put state :lifecycle :shutdown)
-  (put state :pending-requests @{})
-  (stop-index-scans state)
-  (logging/info "Shutting down" [:shutdown])
-  [:ok state :null])
-
-(defn on-exit
-  ``
-  Called by the LSP client to request that the server process exit.
-  ``
-  [state params]
-  (logging/info "Exiting" [:exit])
-  [:exit (if (= :shutdown (state :lifecycle)) 0 1)])
-
-(defn on-janet-serverinfo
-  ``
-  Called by the LSP client to request information about the server.
-  ``
-  [state params]
-  (let [message {:serverInfo {:name "janet-lsp"
-                              :version version
-                              :commit commit}
-                 :trace (state :trace)}]
-    (logging/message message [:info])
-    [:ok state message]))
-
-(defn on-document-definition
-  ``
-  Called by the LSP client to request the location of a symbol's definition.
-  ``
-  [state params]
-  (let [request-uri (document-key (get-in params ["textDocument" "uri"]))
-        document (get-in state [:documents request-uri])
-        content (document :content)
-        eval-env (document :eval-env)
-        {:line line :character character} (request-byte-position state params content)
-        {:word define-word} (lookup/word-at {:line line :character character} content)
-        lexical (and (not (empty? define-word))
-                     (parser/definition-at {:line line :character character}
-                                           content define-word))
-        workspace (document-workspace state document)
-        indexed-name (last (string/split "/" define-word))
-        indexed (and (not lexical) (first (index/definitions workspace indexed-name)))]
-    (cond
-      lexical
-      (let [range (lexical :range)
-            start (position/byte->lsp-position content (range :start) (state :position-encoding))
-            end (position/byte->lsp-position content (range :end) (state :position-encoding))]
-        [:ok state {:uri request-uri :range {:start start :end end}}])
-
-      indexed
-      (let [target-uri (indexed :uri)
-            target-path (uri/file-uri->path target-uri)
-            target-content (or (get-in state [:documents target-uri :content])
-                               (and target-path (os/stat target-path) (slurp target-path)))
-            range (indexed :range)]
-        (if target-content
-          [:ok state {:uri target-uri
-                      :range {:start (position/byte->lsp-position
-                                       target-content (range :start) (state :position-encoding))
-                              :end (position/byte->lsp-position
-                                     target-content (range :end) (state :position-encoding))}}]
-          [:ok state :null]))
-
-      (not (empty? define-word))
-      (if-let [symbol-lookup (get eval-env (symbol define-word) nil)
-               [source-path source-line source-col] (get symbol-lookup :source-map nil)
-               target-path (path/abspath source-path)
-               found (os/stat target-path)
-               target-content (slurp target-path)
-               target-position (position/byte->lsp-position
-                                 target-content
-                                 {:line (max 0 (dec source-line))
-                                  :character (max 0 (dec source-col))}
-                                 (state :position-encoding))]
-        [:ok state {:uri (uri/path->file-uri target-path)
-                    :range {:start target-position :end target-position}}]
-        [:ok state :null])
-
-      [:ok state :null])))
-
-(defn- indexed-range->lsp [source range encoding]
-  {:start (position/byte->lsp-position source (range :start) encoding)
-   :end (position/byte->lsp-position source (range :end) encoding)})
-
-(defn on-document-symbols [state params]
-  (def document-uri (get-in params ["textDocument" "uri"]))
-  (def document (get-in state [:documents document-uri]))
-  (if (nil? document)
-    [:ok state @[]]
-    (let [record (index/analyze document-uri (document :content))
-          encoding (state :position-encoding)
-          symbols
-          (map (fn [definition]
-                 {:name (definition :name) :kind (definition :kind)
-                  :range (indexed-range->lsp (document :content) (definition :range) encoding)
-                  :selectionRange (indexed-range->lsp (document :content)
-                                                       (definition :selection-range) encoding)
-                  :children (map |{:name ($ :name) :kind ($ :kind)
-                                   :range (indexed-range->lsp (document :content) ($ :range) encoding)
-                                   :selectionRange (indexed-range->lsp
-                                                     (document :content) ($ :selection-range) encoding)}
-                                 (definition :children))})
-               (record :definitions))]
-      [:ok state symbols])))
-
-(defn on-workspace-symbols [state params]
-  (def query (string/ascii-lower (or (get params "query") "")))
-  (def symbols @[])
-  (each workspace (values (state :workspaces))
-    (each definition (index/definitions workspace)
-      (when (string/find query (string/ascii-lower (definition :name)))
-        (def target-uri (definition :uri))
-        (def target-path (uri/file-uri->path target-uri))
-        (def content (or (get-in state [:documents target-uri :content])
-                         (and target-path (os/stat target-path) (slurp target-path))))
-        (when content
-          (array/push symbols
-                      {:name (definition :name) :kind (definition :kind)
-                       :location {:uri target-uri
-                                  :range (indexed-range->lsp
-                                           content (definition :selection-range)
-                                           (state :position-encoding))}})))))
-  [:ok state symbols])
-
-(defn- same-position? [a b]
-  (and (= (a :line) (b :line)) (= (a :character) (b :character))))
-
-(defn on-references [state params]
-  (def document-uri (get-in params ["textDocument" "uri"]))
-  (def document (get-in state [:documents document-uri]))
-  (def content (document :content))
-  (def location (request-byte-position state params content))
-  (def name ((lookup/word-at location content) :word))
-  (cond
-    (empty? name)
-    [:ok state @[]]
-    (let [workspace (document-workspace state document)
-          local-definition (parser/definition-at location content name)
-          include-declaration (not= false (get-in params ["context" "includeDeclaration"]))
-          locations @[]]
-      (if local-definition
-        (each reference (parser/references-for name content)
-          (def reference-start (get-in reference [:range :start]))
-          (def resolved (parser/definition-at reference-start content name))
-          (when (or (same-position? reference-start
-                                    (get-in local-definition [:range :start]))
-                    (and resolved
-                         (same-position? (get-in resolved [:range :start])
-                                         (get-in local-definition [:range :start]))))
-            (array/push locations {:uri document-uri :range (reference :range)})))
-        (each record (values (workspace :index))
-          (each reference (record :references)
-            (def base-name (last (string/split "/" name)))
-            (when (or (= base-name (reference :name))
-                      (string/has-suffix? (string "/" base-name) (reference :name)))
-              (array/push locations {:uri (reference :uri) :range (reference :range)})))))
-      (when (not include-declaration)
-        (def indexed-definition
-          (and (not local-definition)
-               (first (index/definitions workspace (last (string/split "/" name))))))
-        (def definition-position
-          (or (and local-definition (get-in local-definition [:range :start]))
-              (get-in indexed-definition [:selection-range :start])))
-        (def definition-uri (if local-definition document-uri
-                              (and indexed-definition (indexed-definition :uri))))
-        (when definition-position
-          (var i (length locations))
-          (while (> i 0)
-            (-= i 1)
-            (when (and (= definition-uri (get-in locations [i :uri]))
-                       (same-position? definition-position
-                                       (get-in (locations i) [:range :start])))
-              (array/remove locations i)))))
-      (def converted @[])
-      (each found locations
-        (def target-uri (found :uri))
-        (def target-path (uri/file-uri->path target-uri))
-        (def target-content (or (get-in state [:documents target-uri :content])
-                                (and target-path (os/stat target-path) (slurp target-path))))
-        (when target-content
-          (array/push converted
-                      {:uri target-uri
-                       :range (indexed-range->lsp target-content (found :range)
-                                                  (state :position-encoding))})))
-      [:ok state (distinct converted)])))
-
-(defn rename-target [state params]
-  (def document-uri (get-in params ["textDocument" "uri"]))
-  (def document (get-in state [:documents document-uri]))
-  (def content (document :content))
-  (def location (request-byte-position state params content))
-  (def word (lookup/word-at location content))
-  (def name (word :word))
-  (def workspace (document-workspace state document))
-  (def local (and (not (empty? name)) (parser/definition-at location content name)))
-  (def indexed (and (not local)
-                    (first (index/definitions workspace (last (string/split "/" name))))))
-  (when (or local indexed)
-    {:name name :uri document-uri :content content
-     :range {:start {:line (location :line) :character (first (word :range))}
-             :end {:line (location :line) :character (last (word :range))}}}))
-
-(defn valid-rename-symbol? [name]
-  (try (let [parsed (parse name)] (and (symbol? parsed) (= name (string parsed))))
-    ([_] false)))
-
-(defn on-prepare-rename [state params]
-  (if-let [target (rename-target state params)]
-    [:ok state {:range (indexed-range->lsp (target :content) (target :range)
-                                           (state :position-encoding))
-                :placeholder (target :name)}]
-    [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"]))
-
-(defn on-rename [state params]
-  (def new-name (get params "newName"))
-  (if (not (valid-rename-symbol? new-name))
-    [:rpc-error state -32602 "Invalid params" "newName must be one Janet symbol"]
-    (if-let [target (rename-target state params)]
-      (match (on-references state
-                            {"textDocument" (get params "textDocument")
-                             "position" (get params "position")
-                             "context" {"includeDeclaration" true}})
-        [:ok _ references]
-        (let [changes @{}]
-          (each reference references
-            (def document-uri (reference :uri))
-            (def document (get-in state [:documents document-uri]))
-            (def filepath (uri/file-uri->path document-uri))
-            (def content (or (and document (document :content))
-                             (and filepath (os/stat filepath) (slurp filepath))))
-            (def range (reference :range))
-            (def line ((string/split "\n" content) (get-in range [:start :line])))
-            (def start-byte (position/units-to-byte line (get-in range [:start :character])
-                                                    (state :position-encoding)))
-            (def end-byte (position/units-to-byte line (get-in range [:end :character])
-                                                  (state :position-encoding)))
-            (def old-name (string/slice line start-byte end-byte))
-            (def slash (string/find "/" old-name))
-            (def replacement (if slash
-                               (string (string/slice old-name 0 (inc slash)) new-name)
-                               new-name))
-            (unless (get changes document-uri) (put changes document-uri @[]))
-            (array/push (get changes document-uri) {:range range :newText replacement}))
-          [:ok state
-           {:documentChanges
-            (seq [[document-uri edits] :pairs changes]
-              {:textDocument {:uri document-uri
-                              :version (get-in state [:documents document-uri :version])}
-               :edits edits})}]))
-      [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"])))
-
-(defn semantic-token-records [state document-uri]
-  (def document (get-in state [:documents document-uri]))
-  (def record (index/analyze document-uri (document :content)))
-  (def definitions (record :definitions))
-  (def records @[])
-  (each definition definitions
-    (array/push records {:range (definition :selection-range)
-                         :type (if (= 12 (definition :kind)) 2 4) :modifiers 3})
-    (each parameter (definition :children)
-      (array/push records {:range (parameter :selection-range) :type 5 :modifiers 1})))
-  (each reference (record :references)
-    (def range (reference :range))
-    (unless (any? (map |(deep= range ($ :range)) records))
-      (def name (reference :name))
-      (def definition (first (filter |(= name ($ :name)) definitions)))
-      (def binding (get (document :eval-env) (symbol name) nil))
-      (def token-type
-        (cond
-          (string/has-prefix? ":" name) 6
-          (scan-number name) 8
-          (string/find "/" name) 0
-          definition (if (= 12 (definition :kind)) 2 4)
-          (and binding (binding :macro)) 3
-          (and binding (has-value? [:function :cfunction] (type (binding :value)))) 2
-          4))
-      (array/push records {:range range :type token-type :modifiers 0})))
-  (sort-by |[(get-in $ [:range :start :line]) (get-in $ [:range :start :character])]
-           records))
-
-(defn on-semantic-tokens-full [state params]
-  (def document-uri (get-in params ["textDocument" "uri"]))
-  (def document (get-in state [:documents document-uri]))
-  (def data @[])
-  (var previous-line 0)
-  (var previous-character 0)
-  (each token (semantic-token-records state document-uri)
-    (def range (token :range))
-    (def start (position/byte->lsp-position (document :content) (range :start)
-                                            (state :position-encoding)))
-    (def end (position/byte->lsp-position (document :content) (range :end)
-                                          (state :position-encoding)))
-    (when (and start end (= (start :line) (end :line))
-               (> (end :character) (start :character)))
-      (def delta-line (- (start :line) previous-line))
-      (def delta-character (if (= delta-line 0)
-                             (- (start :character) previous-character)
-                             (start :character)))
-      (array/concat data [delta-line delta-character
-                          (- (end :character) (start :character))
-                          (token :type) (token :modifiers)])
-      (set previous-line (start :line))
-      (set previous-character (start :character))))
-  [:ok state {:data data}])
-
-(defn missing-delimiters [source]
-  (def stack @[])
-  (each byte (string/bytes (lookup/structure-mask source))
-    (case byte
-      40 (array/push stack 41)
-      91 (array/push stack 93)
-      123 (array/push stack 125)
-      41 (if (and (not (empty? stack)) (= 41 (last stack))) (array/pop stack) (array/push stack nil))
-      93 (if (and (not (empty? stack)) (= 93 (last stack))) (array/pop stack) (array/push stack nil))
-      125 (if (and (not (empty? stack)) (= 125 (last stack))) (array/pop stack) (array/push stack nil))))
-  (when (not (has-value? stack nil))
-    (string/from-bytes ;(reverse stack))))
-
-(defn on-code-action [state params]
-  (def document-uri (get-in params ["textDocument" "uri"]))
-  (def document (get-in state [:documents document-uri]))
-  (def only (get-in params ["context" "only"] @[]))
-  (def supports? (or (empty? only) (has-value? only "quickfix")))
-  (def actions @[])
-  (when supports?
-    (each diagnostic (get-in params ["context" "diagnostics"] @[])
-      (when (and (= "janet.parse.unclosed-delimiter" (get diagnostic "code"))
-                 (= (hash (document :content)) (get-in diagnostic ["data" "contentHash"]))
-                 (= (document :version) (get-in diagnostic ["data" "version"])))
-        (when-let [closing (missing-delimiters (document :content))]
-          (when (not (empty? closing))
-            (def end (position/document-end (document :content) (state :position-encoding)))
-            (array/push actions
-                        {:title (string "Insert missing " closing)
-                         :kind "quickfix"
-                         :diagnostics [diagnostic]
-                         :isPreferred true
-                         :edit {:documentChanges
-                                [{:textDocument {:uri document-uri
-                                                 :version (document :version)}
-                                  :edits [{:range {:start end :end end}
-                                           :newText closing}]}]}}))))))
-  [:ok state actions])
-
-(defn- position-in-range? [position range]
-  (def start (get range "start"))
-  (def end (get range "end"))
-  (and (or (> (position :line) (get start "line"))
-           (and (= (position :line) (get start "line"))
-                (>= (position :character) (get start "character"))))
-       (or (< (position :line) (get end "line"))
-           (and (= (position :line) (get end "line"))
-                (<= (position :character) (get end "character"))))))
-
-(defn on-inlay-hint [state params]
-  (if (not (state :inlay-parameter-hints))
-    [:ok state @[]]
-    (let [document-uri (get-in params ["textDocument" "uri"])
-          document (get-in state [:documents document-uri])
-          content (document :content)
-          requested (get params "range")
-          hints @[]]
-      (each reference ((index/analyze document-uri content) :references)
-        (def byte-start (get-in reference [:range :start]))
-        (def byte-end (get-in reference [:range :end]))
-        (def position (position/byte->lsp-position content byte-start
-                                                   (state :position-encoding)))
-        (when (and position (position-in-range? position requested))
-          (def context (lookup/call-context byte-end content))
-          (when (and context
-                     (not (deep= byte-start
-                                 (lookup/from-index (first (context :range)) content))))
-            (def signature (doc/get-signature (symbol (context :callee)) (document :eval-env)))
-            (when signature
-              (def tokens (filter |(not (empty? $))
-                                  (string/split " " (string/trim signature "()"))))
-              (def parameters (array/slice tokens 1))
-              (def active (context :active-parameter))
-              (when (and (< active (length parameters))
-                         (not (any? (map |(string/has-prefix? "&" $) parameters))))
-                (def parameter (parameters active))
-                (when (not= parameter (reference :name))
-                  (array/push hints
-                              {:position position
-                               :label (string parameter ":")
-                               :kind 2
-                               :paddingRight true
-                               :tooltip {:kind "markdown"
-                                         :value (string "Parameter `" parameter "` of `"
-                                                        (context :callee) "`")}})))))))
-      [:ok state (distinct hints)])))
+(eachk key jpm-defs
+  (when (= :symbol (type key))
+    (put-in jpm-defs [key :source-map] nil)))
 
 (defn on-set-trace [state params]
-  (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
     "off" (put state :trace "off")
     "messages" (put state :trace "messages")
     "verbose" (put state :trace "verbose")
-    (logging/warn (string/format "Ignoring invalid trace value: %m" (get params "value"))
+    (logging/warn (string/format "Ignoring invalid trace value: %m"
+                                 (get params "value"))
                   [:settrace]))
   [:noresponse state])
 
 (defn on-cancel-request [state params]
   (def id (get params "id"))
   (when (rpc/valid-id? id)
-    (put-in state [:cancelled-requests id] true))
+    (put (state :cancelled-requests) id true))
   [:noresponse state])
 
-(defn on-janet-tell-joke [state params]
-  (let [message {:question "What's brown and sticky?"
-                 :answer "A stick!"}]
-    (logging/message message [:joke])
-    [:ok state message]))
+(defn on-enable-debug [state]
+  (setdyn :debug true)
+  (try (spit "janetlsp.log" "")
+    ([_] (logging/err "Could not write janetlsp.log" [:core])))
+  [:ok state {:message "Enabled :debug"}])
 
-(defn on-enable-debug [state params]
-  (let [message {:message "Enabled :debug"}]
-    (setdyn :debug true)
-    (try (spit "janetlsp.log" "")
-      ([_] (logging/err "Tried to write to janetlsp.log, but couldn't" [:core])))
-    (logging/message message [:debug])
-    [:ok state message]))
+(defn on-disable-debug [state]
+  (setdyn :debug false)
+  (setdyn :log-level 2)
+  [:ok state {:message "Disabled :debug"}])
 
-(defn on-disable-debug [state params]
-  (let [message {:message "Disabled :debug"}]
-    (setdyn :debug false)
-    (setdyn :log-level 2)
-    (logging/message message [:debug])
-    [:ok state message]))
+(defn on-set-log-level [state params kind]
+  (def name (get params "level"))
+  (if-let [level ({"off" 0 "messages" 1 "verbose" 2 "veryverbose" 3} name)]
+    (do
+      (setdyn kind level)
+      [:ok state {:message (string/format "Set %s to %s" kind name)}])
+    [:rpc-error state -32602 "Invalid params"
+     "level must be off, messages, verbose, or veryverbose"]))
 
-(defn do-set-log-level [state params kind]
-  (let [new-level-string (get params "level")
-        new-level ({"off" 0 "messages" 1 "verbose" 2 "veryverbose" 3} new-level-string)]
-    (if (nil? new-level)
-      [:rpc-error state -32602 "Invalid params"
-       "level must be off, messages, verbose, or veryverbose"]
-      (let [message {:message (string/format "Set %s to %s" kind new-level-string)}]
-        (logging/message message [:loglevel])
-        (setdyn kind new-level)
-        [:ok state message]))))
-
-(defmacro on-set-log-level [state params]
-  ~(,do-set-log-level ,state ,params :log-level))
-
-(defmacro on-set-file-log-level [state params]
-  ~(,do-set-log-level ,state ,params :log-to-file-level))
-
-(def open-document-request-methods
+(def open-document-methods
   {"textDocument/completion" true
    "textDocument/diagnostic" true
    "textDocument/formatting" true
@@ -1069,7 +70,7 @@
    "textDocument/inlayHint" true
    "textDocument/documentSymbol" true})
 
-(def position-request-methods
+(def position-methods
   {"textDocument/completion" true
    "textDocument/hover" true
    "textDocument/signatureHelp" true
@@ -1079,58 +80,57 @@
    "textDocument/rename" true})
 
 (defn handle-message [message state]
-  (let [id (get message "id")
-        method (get message "method")
+  (let [method (get message "method")
         params (get message "params")
-        document-uri (get-in params ["textDocument" "uri"])
-        document (get-in state [:documents (document-key document-uri)])]
-    (logging/info (string/format "handle-message received method request: `%s`" method) [:core] 0 id)
-    (if (or (and (get open-document-request-methods method) (nil? document))
-            (and (get position-request-methods method)
-                 (nil? (request-byte-position state params (document :content)))))
+        document (server-utils/document state params)]
+    (logging/info (string/format "handling `%s`" method) [:core] 0 (get message "id"))
+    (if (or (and (get open-document-methods method) (nil? document))
+            (and (get position-methods method)
+                 (nil? (server-utils/request-byte-position
+                         state params (document :content)))))
       [:ok state :null]
       (case method
-      "initialize" (on-initialize state params)
-      "initialized" (on-initialized state)
-      "textDocument/didOpen" (on-document-open state params)
-      "textDocument/didChange" (on-document-change state params)
-      "textDocument/didClose" (on-document-close state params)
-      "textDocument/completion" (on-completion state params)
-      "completionItem/resolve" (on-completion-item-resolve state params)
-      "textDocument/diagnostic" (on-document-diagnostic state params)
-      "textDocument/formatting" (on-document-formatting state params)
-      "textDocument/hover" (on-document-hover state params)
-      "textDocument/signatureHelp" (on-document-signature-help state params)
-      # "textDocument/references" (on-document-references state params) TODO: Implement this? See src/lsp/api.ts:103
-      # "textDocument/documentSymbol" (on-document-symbols state params) TODO: Implement this? See src/lsp/api.ts:121
-      "textDocument/definition" (on-document-definition state params)
-      "textDocument/documentSymbol" (on-document-symbols state params)
-      "workspace/symbol" (on-workspace-symbols state params)
-      "textDocument/references" (on-references state params)
-      "textDocument/prepareRename" (on-prepare-rename state params)
-      "textDocument/rename" (on-rename state params)
-      "textDocument/semanticTokens/full" (on-semantic-tokens-full state params)
-      "textDocument/codeAction" (on-code-action state params)
-      "textDocument/inlayHint" (on-inlay-hint state params)
-      "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
-      "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
-      "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)
-      "$/cancelRequest" (on-cancel-request state params)
-      "janet/serverInfo" (on-janet-serverinfo state params)
-      "janet/tellJoke" (on-janet-tell-joke state params)
-      "enableDebug" (on-enable-debug state params)
-      "disableDebug" (on-disable-debug state params)
-      "setLogLevel" (on-set-log-level state params)
-      "setLogToFileLevel" (on-set-file-log-level state params)
-      "shutdown" (on-shutdown state params)
-      "exit" (on-exit state params)
-      "$/setTrace" (on-set-trace state params)
-      (do
-        (logging/warn (string/format "Received unrecognized RPC: %m" method) [:handle])
-        [:method-not-found state])))))
+        "initialize" (lifecycle/on-initialize state params)
+        "initialized" (lifecycle/on-initialized state)
+        "shutdown" (lifecycle/on-shutdown state)
+        "exit" (lifecycle/on-exit state)
 
-(defn write-response [file response]
-  (transport/write-frame file response))
+        "textDocument/didOpen" (documents/on-open state params)
+        "textDocument/didChange" (documents/on-change state params)
+        "textDocument/didClose" (documents/on-close state params)
+        "textDocument/diagnostic" (documents/on-diagnostic state params)
+        "textDocument/formatting" (documents/on-formatting state params)
+
+        "textDocument/completion" (editor-features/on-completion state params)
+        "completionItem/resolve" (editor-features/on-completion-resolve state params)
+        "textDocument/hover" (editor-features/on-hover state params)
+        "textDocument/signatureHelp" (editor-features/on-signature-help state params)
+        "textDocument/semanticTokens/full"
+        (editor-features/on-semantic-tokens-full state params)
+        "textDocument/codeAction" (editor-features/on-code-action state params)
+        "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
+
+        "textDocument/definition" (navigation/on-definition state params)
+        "textDocument/documentSymbol" (navigation/on-document-symbols state params)
+        "workspace/symbol" (navigation/on-workspace-symbols state params)
+        "textDocument/references" (navigation/on-references state params)
+        "textDocument/prepareRename" (navigation/on-prepare-rename state params)
+        "textDocument/rename" (navigation/on-rename state params)
+
+        "workspace/didChangeWorkspaceFolders" (workspace/on-folders-changed state params)
+        "workspace/didChangeWatchedFiles" (workspace/on-watched-files-changed state params)
+        "window/workDoneProgress/cancel" (workspace/cancel-scan state params)
+        "$/cancelRequest" (on-cancel-request state params)
+        "$/setTrace" (on-set-trace state params)
+
+        "janet/serverInfo" (lifecycle/on-server-info state)
+        "janet/tellJoke"
+        [:ok state {:question "What's brown and sticky?" :answer "A stick!"}]
+        "enableDebug" (on-enable-debug state)
+        "disableDebug" (on-disable-debug state)
+        "setLogLevel" (on-set-log-level state params :log-level)
+        "setLogToFileLevel" (on-set-log-level state params :log-to-file-level)
+        [:method-not-found state]))))
 
 (defn read-message []
   (when-let [input (transport/read-frame stdin)]
@@ -1138,19 +138,24 @@
     (try [:ok (json/decode input)]
       ([err] [:parse-error err]))))
 
-(defn write-rpc-error [id code message &opt data]
-  (write-response stdout (rpc/error-response id code message data)))
+(defn- write-message [message]
+  (transport/write-frame stdout message))
+
+(defn- write-error [id code message &opt data]
+  (write-message (rpc/error-response id code message data)))
+
+(defn- write-request [request]
+  (write-message
+    (rpc/request (request :id) (request :method) (request :params))))
 
 (defn lifecycle-action [message state]
-  (def lifecycle (state :lifecycle))
   (def method (get message "method"))
   (def notification? (rpc/notification? message))
-  (case lifecycle
+  (case (state :lifecycle)
     :uninitialized
     (cond
-      (= method "initialize") (if notification?
-                                [-32600 "Invalid Request" "initialize must be a request"]
-                                nil)
+      (= method "initialize")
+      (if notification? [-32600 "Invalid Request" "initialize must be a request"] nil)
       (= method "exit") nil
       notification? :ignore
       [-32002 "Server not initialized" nil])
@@ -1158,12 +163,9 @@
     :initialized
     (cond
       (= method "initialize") [-32600 "Invalid Request" "initialize may only be sent once"]
-      (= method "initialized") (if notification?
-                                 nil
-                                 [-32600 "Invalid Request" "initialized must be a notification"])
-      (= method "shutdown") (if notification?
-                              :ignore
-                              nil)
+      (= method "initialized")
+      (if notification? nil [-32600 "Invalid Request" "initialized must be a notification"])
+      (= method "shutdown") (if notification? :ignore nil)
       nil)
 
     :shutdown
@@ -1172,177 +174,130 @@
       notification? :ignore
       [-32600 "Invalid Request" "server has shut down"])))
 
+(defn- emit-handler-result [result id notification?]
+  (match result
+    [:ok state response :notify true]
+    (do (write-message (rpc/notification response)) state)
+
+    [:ok state response]
+    (do
+      (unless notification? (write-message (rpc/success-response id response)))
+      state)
+
+    [:request state request]
+    (do (write-request request) state)
+
+    [:requests state requests]
+    (do (each request requests (write-request request)) state)
+
+    [:rpc-error state code message data]
+    (do (unless notification? (write-error id code message data)) state)
+
+    [:noresponse state] state
+
+    [:method-not-found state]
+    (do (unless notification? (write-error id -32601 "Method not found")) state)
+
+    [:error state err fiber]
+    (do
+      (logging/err (string/format "%m" err) [:core])
+      (debug/stacktrace fiber err "")
+      (unless notification? (write-error id -32603 "Internal error"))
+      state)
+
+    [:exit status] [:exit status]))
+
 (defn dispatch-message [message state]
-  (refresh-index-scans state)
+  (workspace/refresh-scans state)
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
-  (if (rpc/response? message)
-    (handle-client-response message state)
-  (if-let [[code error-message data] (rpc/validate-message message)]
+  (cond
+    (rpc/response? message)
+    (workspace/handle-client-response message state)
+
+    (if-let [[code error-message data] (rpc/validate-message message)]
+      (do (write-error id code error-message data) true))
+    state
+
+    (and (not notification?) (has-key? (state :cancelled-requests) id))
     (do
-      (write-rpc-error id code error-message data)
+      (put (state :cancelled-requests) id nil)
+      (write-error id -32800 "Request cancelled")
       state)
-    (if (and (not notification?) (has-key? (state :cancelled-requests) id))
-      (do
-        (put (state :cancelled-requests) id nil)
-        (write-rpc-error id -32800 "Request cancelled")
-        state)
+
     (match (lifecycle-action message state)
       :ignore state
       [code error-message data]
-      (do
-        (write-rpc-error id code error-message data)
-        state)
+      (do (write-error id code error-message data) state)
       nil
-      (match (try (handle-message message state) ([err fib] [:error state err fib]))
-        [:ok new-state response :notify true]
-        (do
-          (write-response stdout (rpc/notification response))
-          new-state)
+      (emit-handler-result
+        (try (handle-message message state)
+          ([err fiber] [:error state err fiber]))
+        id notification?))))
 
-        [:ok new-state response]
-        (do
-          (unless notification?
-            (write-response stdout (rpc/success-response id response)))
-          new-state)
-
-        [:request new-state request]
-        (do
-          (write-response stdout
-                          (rpc/request (request :id)
-                                       (request :method)
-                                       (request :params)))
-          new-state)
-
-        [:requests new-state requests]
-        (do
-          (each request requests
-            (write-response stdout
-                            (rpc/request (request :id)
-                                         (request :method)
-                                         (request :params))))
-          new-state)
-
-        [:rpc-error new-state code error-message data]
-        (do
-          (unless notification?
-            (write-rpc-error id code error-message data))
-          new-state)
-
-        [:noresponse new-state] new-state
-
-        [:method-not-found new-state]
-        (do
-          (unless notification?
-            (write-rpc-error id -32601 "Method not found"))
-          new-state)
-
-        [:error new-state err fib]
-        (do
-          (logging/err (string/format "%m" err) [:core])
-          (debug/stacktrace fib err "")
-          (unless notification?
-            (write-rpc-error id -32603 "Internal error"))
-          new-state)
-
-        [:exit status] [:exit status]))))))
-
-(defn message-loop [&named state]
-  (logging/info "Loop enter" [:core] 1)
-  (logging/dbg (string/format "current state is: %m" state) [:priority])
+(defn message-loop [state]
   (match (read-message)
     nil (do (file/flush stdout) (os/exit 0))
     [:parse-error err]
     (do
       (logging/warn (string/format "Invalid JSON: %s" err) [:rpc])
-      (write-rpc-error :null -32700 "Parse error")
-      (message-loop :state state))
+      (write-error :null -32700 "Parse error")
+      (message-loop state))
     [:ok message]
-    (do
-      (logging/dbg (string/format "got: %q" message) [:core])
-      (match (dispatch-message message state)
-        [:exit status] (do (file/flush stdout) (os/exit status))
-        new-state (message-loop :state new-state)))))
+    (match (dispatch-message message state)
+      [:exit status] (do (file/flush stdout) (os/exit status))
+      next-state (message-loop next-state))))
 
 (defn start-language-server []
-  (logging/info (string "Starting LSP " version "-" commit) [:core])
+  (logging/info (string "Starting LSP " server-meta/version "-" server-meta/commit) [:core])
   (when (dyn :debug)
     (try (spit "janetlsp.log" "")
-      ([_] (logging/err "Tried to write to janetlsp.log txt, but couldn't" [:core]))))
-
+      ([_] (logging/err "Could not write janetlsp.log" [:core]))))
   (merge-module root-env jpm-defs nil true)
-
-  (message-loop :state @{:documents @{}
-                         :lifecycle :uninitialized
-                         :position-encoding "utf-16"
-                         :trace "off"
-                         :pending-requests @{}
-                         :cancelled-requests @{}
-                         :trusted-workspaces @[]
-                         :workspaces @{}
-                         :standalone-workspace @{:uri nil
-                                                 :path nil
-                                                 :trusted false
-                                                 :index @{}
-                                                 :env (make-env root-env)
-                                                 :unique-paths @[]}}))
+  (message-loop (lifecycle/initial-state)))
 
 (defn start-debug-console []
   (def host "127.0.0.1")
   (def port (logging/debug-port (dyn :opts)))
-
-  (print "Janet LSP Debug Console v" version "-" commit)
+  (print "Janet LSP Debug Console v" server-meta/version "-" server-meta/commit)
   (print (string/format "Listening on %s:%s" host port))
   (print "Awaiting reports from running LSP...")
-
-  (var linecount 0)
-
-  (rpc/server
-    {:print (fn [self x]
-              (print (string/format "server:%d:> %s" linecount x))
+  (var line-count 0)
+  (debug-rpc/server
+    {:print (fn [self value]
+              (print (string/format "server:%d:> %s" line-count value))
               (file/flush stdout)
-              (+= linecount 1))}
+              (+= line-count 1))}
     host port))
 
 (defn main [& args]
-
   (def parsed-args (cmd/args))
-
   (when (or (has-value? parsed-args "--version")
             (has-value? parsed-args "-v"))
-    (print "Janet LSP v" version "-" commit)
+    (print "Janet LSP v" server-meta/version "-" server-meta/commit)
     (os/exit 0))
-
   (cmd/run
     (cmd/fn
       "A Language Server (LSP) for the Janet Programming Language."
       [[--dont-search-jpm-tree -j] (flag) "Whether to search `jpm_tree` for modules."
        --stdio (flag) "Use STDIO."
        [--debug -d] (flag) "Print debug messages."
-       [--log-level -l] (optional :int++ 1) "What level of logging to display. Defaults to 1."
-       [--log-to-file-level -f] (optional :int++ 2) "What level of logging to write to the log file. Defaults to 2."
-       [--log-category -L] (tuple :string) "Enable logging by category. For multiple categories, repeat the flag."
-       [--console -c] (flag) "Start a debug console instead of starting the Language Server."
-       [--debug-port -p] (optional :int++) "What port to start or connect to the debug console on. Defaults to 8037."]
-
+       [--log-level -l] (optional :int++ 1) "What level of logging to display."
+       [--log-to-file-level -f] (optional :int++ 2) "What level of file logging to use."
+       [--log-category -L] (tuple :string) "Enable a logging category; repeat as needed."
+       [--console -c] (flag) "Start a debug console instead of the language server."
+       [--debug-port -p] (optional :int++) "Debug console port. Defaults to 8037."]
       (default stdio true)
       (default debug-port 8037)
-
-      (def opts
-        {:dont-search-jpm-tree dont-search-jpm-tree
-         :stdio stdio
-         :console console
-         :debug-port debug-port})
-
-      (setdyn :opts opts)
-      (when debug (setdyn :debug true)) #(setdyn :debug true)
-      (setdyn :log-level log-level) #(setdyn :log-level 2)
-      (setdyn :log-to-file-level log-to-file-level) #(setdyn :log-level 3)
-      (setdyn :log-categories @[:core ;(map keyword log-category)]) #(setdyn :log-categories [:core :priority :loglevel])
+      (setdyn :opts {:dont-search-jpm-tree dont-search-jpm-tree
+                     :stdio stdio
+                     :console console
+                     :debug-port debug-port})
+      (when debug (setdyn :debug true))
+      (setdyn :log-level log-level)
+      (setdyn :log-to-file-level log-to-file-level)
+      (setdyn :log-categories @[:core ;(map keyword log-category)])
       (setdyn :out stderr)
       (put root-env :out stderr)
-
-      (if console
-        (start-debug-console)
-        (start-language-server)))
+      (if console (start-debug-console) (start-language-server)))
     parsed-args))
