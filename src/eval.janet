@@ -1,5 +1,7 @@
 (import ./logging)
 
+(def max-source-bytes 1048576)
+
 (varfn is-safe-def :private [])
 
 (var- safe-forms {})
@@ -99,10 +101,10 @@
   (def trusted (options :trusted))
   (def base-env (options :base-env))
   (def unique-paths (options :unique-paths))
-  (def max-source-bytes (or (options :max-source-bytes) 1048576))
-  (if (> (length str) max-source-bytes)
+  (def source-limit (or (options :max-source-bytes) max-source-bytes))
+  (if (> (length str) source-limit)
     [[{:message (string/format "analysis limit exceeded: source is larger than %d bytes"
-                               max-source-bytes)
+                               source-limit)
        :location [1 1]
        :severity 1}]
      (make-env (or base-env root-env))]

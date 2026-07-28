@@ -19,6 +19,11 @@ Format for entires is <version-string> - release date.
 - Split the server into focused lifecycle, document, workspace, navigation,
   editor-feature, diagnostics, and shared state modules, and extracted the
   timeout-bounded integration client.
+- Workspace indexing now runs for clients without progress support; supported
+  clients receive registered, cancellable work-done progress. Indexer failures
+  are reported and reaped without leaving scans stuck.
+- Static linting respects the analysis size bound, handles destructured
+  parameters, and suppresses unused warnings when macros may synthesize reads.
 
 ## 0.0.11 - 2026-02-14
 

@@ -43,7 +43,12 @@
     (lint/analyze "(defn run [used unused _ignored] (+ used 1))\n"))
   (test (map |($ :message) diagnostics) @["unused parameter unused"])
   (test (get-in diagnostics [0 :code]) "janet.lint.unused-parameter")
-  (test (lint/analyze "(defn run [{:keys [value]}] value)\n") @[]))
+  (test (lint/analyze "(defn run [{:keys [value]}] value)\n") @[])
+  (test (map |($ :message) (lint/analyze "(defn run [[a b]] nil)\n"))
+        @["unused parameter a" "unused parameter b"])
+  (test (lint/analyze
+          "(defmacro use-value [] 'value)\n(defn run [value] (use-value))\n")
+        @[]))
 
 (deftest "convert negotiated position encodings"
   (def line "aé☃😀é")

@@ -208,9 +208,10 @@
     [:exit status] [:exit status]))
 
 (defn dispatch-message [message state]
-  (workspace/refresh-scans state)
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
+  (unless (rpc/response? message)
+    (workspace/refresh-scans state))
   (cond
     (rpc/response? message)
     (workspace/handle-client-response message state)

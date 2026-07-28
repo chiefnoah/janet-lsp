@@ -22,7 +22,10 @@
                           {:trusted (workspace :trusted)
                            :base-env (workspace :env)
                            :unique-paths (workspace :unique-paths)})
-        results (array ;compiler-results ;(lint/analyze content))]
+        lint-results (if (> (length content) eval/max-source-bytes)
+                       @[]
+                       (lint/analyze content env))
+        results (array ;compiler-results ;lint-results)]
     (logging/dbg (string/format "eval-buffer returned: %m" results) [:evaluation])
     (each result results
       (def diagnostic-code (get result :code))

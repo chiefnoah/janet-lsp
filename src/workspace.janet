@@ -1,5 +1,6 @@
 (import ./diagnostics)
 (import ./index)
+(import ./logging)
 (import ./rpc)
 (import ./server-utils)
 (import ./transport)
@@ -71,37 +72,68 @@
                          (rpc/notification
                            {:method "$/progress" :params {:token token :value value}})))
 
-(defn start-scans [state]
-  (when (state :work-done-progress)
-    (each workspace (values (state :workspaces))
-      (unless (workspace :scan)
-        (def token (string "janet-lsp/index/" (hash (workspace :uri))))
-        (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-"
-                            (hash (workspace :uri)) ".jdn"))
-        (when (os/stat output) (os/rm output))
-        (merge-into workspace
-                    {:scan-token token
-                     :scan-output output
-                     :scan (os/spawn [(janet-executable) indexer-script
-                                      (workspace :path) output
-                                      (string/format "%j" (workspace :exclusions))])})
-        (progress token {:kind "begin" :title "Index Janet workspace"}))))
-  nil)
+(defn start-scans [state &opt workspaces]
+  (default workspaces (values (state :workspaces)))
+  (def requests @[])
+  (each workspace workspaces
+    (unless (workspace :scan)
+      (def digest (hash (workspace :uri)))
+      (def token (string "janet-lsp/index/" digest))
+      (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-" digest ".jdn"))
+      (each stale [output (string output ".tmp")]
+        (when (os/stat stale) (os/rm stale)))
+      (def process
+        (try (os/spawn [(janet-executable) indexer-script
+                        (workspace :path) output
+                        (string/format "%j" (workspace :exclusions))])
+          ([err]
+            (logging/warn (string/format "Could not start workspace indexer: %s" err)
+                          [:index])
+            nil)))
+      (when process
+        (merge-into workspace {:scan-token token
+                               :scan-output output
+                               :scan process
+                               :progress-started false})
+        (when (state :work-done-progress)
+          (def id (string "janet-lsp/progress/create/" digest))
+          (put (state :pending-requests) id
+               {:kind :progress-create :uri (workspace :uri) :token token})
+          (array/push requests
+                      {:id id
+                       :method "window/workDoneProgress/create"
+                       :params {:token token}})))))
+  requests)
 
 (defn refresh-scans [state]
   (each workspace (values (state :workspaces))
     (when-let [output (workspace :scan-output)
                found (os/stat output)]
-      (put workspace :index (parse (slurp output)))
+      (def result
+        (try (let [parsed (parse (slurp output))]
+               (if (dictionary? parsed)
+                 parsed
+                 {:ok false :error "invalid indexer output"}))
+          ([err] {:ok false :error (string "invalid indexer output: " err)})))
       (os/rm output)
-      (os/proc-wait (workspace :scan))
+      (def status (os/proc-wait (workspace :scan)))
+      (when (and (= true (result :ok)) (= 0 status))
+        (put workspace :index (result :index)))
       (put workspace :scan nil)
       (put workspace :scan-output nil)
       (each document (values (state :documents))
         (when (= workspace (server-utils/document-workspace state document))
           (index/update workspace (document :uri) (document :content))))
-      (when (state :work-done-progress)
-        (progress (workspace :scan-token) {:kind "end" :message "Index complete"}))))
+      (def succeeded (and (= true (result :ok)) (= 0 status)))
+      (unless succeeded
+        (logging/warn (string "Workspace index failed: "
+                              (or (result :error) (string "exit status " status)))
+                      [:index]))
+      (when (workspace :progress-started)
+        (progress (workspace :scan-token)
+                  {:kind "end"
+                   :message (if succeeded "Index complete" "Index failed")}))
+      (put workspace :progress-started false)))
   state)
 
 (defn- remove-scan-files [workspace]
@@ -120,6 +152,8 @@
   (def token (get params "token"))
   (each workspace (values (state :workspaces))
     (when (and (= token (workspace :scan-token)) (workspace :scan))
+      (when (workspace :progress-started)
+        (progress token {:kind "end" :message "Index cancelled"}))
       (stop-scan workspace)))
   [:noresponse state])
 
@@ -197,23 +231,29 @@
       (put (state :workspaces) root-uri configured)
       (array/push added configured)))
   (reanalyze-open-documents state)
-  (start-scans state)
-  (def requests (trust-requests state added))
+  (def requests (array ;(start-scans state added) ;(trust-requests state added)))
   (if (empty? requests) [:noresponse state] [:requests state requests]))
 
 (defn handle-client-response [message state]
   (def id (get message "id"))
   (when-let [pending (get (state :pending-requests) id)]
     (put (state :pending-requests) id nil)
-    (when (and (= :workspace-trust (pending :kind))
-               (= "Trust for This Session" (get-in message ["result" "title"])))
-      (def root-uri (pending :uri))
-      (when-let [current (get (state :workspaces) root-uri)]
-        (unless (has-value? (state :trusted-workspaces) root-uri)
-          (array/push (state :trusted-workspaces) root-uri))
-        (def trusted (configure root-uri (state :trusted-workspaces)))
-        (put trusted :index (current :index))
-        (put trusted :exclusions (current :exclusions))
-        (merge-into current trusted)
-        (reanalyze-open-documents state))))
+    (case (pending :kind)
+      :progress-create
+      (when-let [current (get (state :workspaces) (pending :uri))]
+        (when (and (current :scan) (nil? (get message "error")))
+          (put current :progress-started true)
+          (progress (pending :token)
+                    {:kind "begin" :title "Index Janet workspace"})))
+      :workspace-trust
+      (when (= "Trust for This Session" (get-in message ["result" "title"]))
+        (def root-uri (pending :uri))
+        (when-let [current (get (state :workspaces) root-uri)]
+          (unless (has-value? (state :trusted-workspaces) root-uri)
+            (array/push (state :trusted-workspaces) root-uri))
+          (def trusted (configure root-uri (state :trusted-workspaces)))
+          (put trusted :index (current :index))
+          (put trusted :exclusions (current :exclusions))
+          (merge-into current trusted)
+          (reanalyze-open-documents state)))))
   state)

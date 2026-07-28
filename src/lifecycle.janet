@@ -75,8 +75,9 @@
   [:ok state result])
 
 (defn on-initialized [state]
-  (workspace/start-scans state)
-  (def requests (workspace/trust-requests state (values (state :workspaces))))
+  (def requests
+    (array ;(workspace/start-scans state)
+           ;(workspace/trust-requests state (values (state :workspaces)))))
   (if (empty? requests) [:noresponse state] [:requests state requests]))
 
 (defn on-shutdown [state]

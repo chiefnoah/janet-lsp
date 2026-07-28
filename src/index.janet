@@ -51,6 +51,8 @@
            :when (or (nil? name) (= name (definition :name)))] definition))
 
 (defn scan [root exclusions]
+  (unless (os/stat root)
+    (error (string "workspace root does not exist: " root)))
   (def records @{})
   (def pending @[root])
   (while (not (empty? pending))

@@ -77,10 +77,13 @@
                              :textDocument {:diagnostic {}}}}))
   (test (get-in initialized [:id]) 100)
   (notify cursor "initialized")
+  (def create (read-output cursor))
+  (test (get-in create [:method]) "window/workDoneProgress/create")
+  (def trust (read-output cursor))
+  (respond cursor (get-in create [:id]) :null)
   (def begin (read-output cursor))
   (test (get-in begin [:method]) "$/progress")
   (test (get-in begin [:params :value :kind]) "begin")
-  (def trust (read-output cursor))
   (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
   (ev/sleep 0.2)
   (write-output cursor {:jsonrpc "2.0" :id 101 :method "janet/serverInfo" :params {}})
@@ -88,6 +91,22 @@
   (test (get-in ended [:method]) "$/progress")
   (test (get-in ended [:params :value :kind]) "end")
   (test (get-in (read-output cursor) [:id]) 101)
+  (exit-lsp cursor)
+  (remove-tree root))
+
+(deftest "workspace index scans run without progress support"
+  (def root (temp-directory "janet-lsp-index-no-progress"))
+  (spit (path/join root "main.janet") "(def indexed-without-progress 1)\n")
+  (def root-uri (uri/path->file-uri root))
+  (def cursor (spawn-lsp))
+  (request cursor 127 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (notify cursor "initialized")
+  (def trust (read-output cursor))
+  (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
+  (ev/sleep 0.2)
+  (def symbols (request cursor 128 "workspace/symbol" {:query "without-progress"}))
+  (test (get-in symbols [:result 0 :name]) "indexed-without-progress")
   (exit-lsp cursor)
   (remove-tree root))
 
@@ -101,12 +120,38 @@
             :capabilities {:window {:workDoneProgress true}}
             :initializationOptions {:trustedWorkspaces [root-uri]}})
   (notify cursor "initialized")
+  (def create (read-output cursor))
+  (respond cursor (get-in create [:id]) :null)
   (def begin (read-output cursor))
   (def token (get-in begin [:params :token]))
   (notify cursor "window/workDoneProgress/cancel" {:token token})
+  (test (get-in (read-output cursor) [:params :value :message]) "Index cancelled")
   (test (get-in (request cursor 103 "janet/serverInfo") [:id]) 103)
   (exit-lsp cursor)
   (remove-tree root))
+
+(deftest "workspace indexer failures finish registered progress"
+  (def root (temp-directory "janet-lsp-index-failure"))
+  (def root-uri (uri/path->file-uri root))
+  (def cursor (spawn-lsp))
+  (request cursor 129 "initialize"
+           {:rootUri root-uri
+            :capabilities {:window {:workDoneProgress true}
+                           :textDocument {:diagnostic {}}}})
+  (remove-tree root)
+  (notify cursor "initialized")
+  (def create (read-output cursor))
+  (def trust (read-output cursor))
+  (respond cursor (get-in create [:id]) :null)
+  (test (get-in (read-output cursor) [:params :value :kind]) "begin")
+  (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
+  (ev/sleep 0.2)
+  (write-output cursor {:jsonrpc "2.0" :id 130 :method "janet/serverInfo" :params {}})
+  (def ended (read-output cursor))
+  (test (get-in ended [:params :value :kind]) "end")
+  (test (get-in ended [:params :value :message]) "Index failed")
+  (test (get-in (read-output cursor) [:id]) 130)
+  (exit-lsp cursor))
 
 (deftest: with-process "convert default UTF-16 feature positions" [cursor]
   (def unicode-text "(do \"😀\" string)\n")
@@ -816,13 +861,16 @@
 
   (notify cursor "textDocument/didChange"
           {:textDocument {:uri document-uri :version 3}
-           :contentChanges [{:text (string/repeat " " 1048577)}]})
+           :contentChanges
+           [{:text (string "(defn skipped [unused] 1)\n"
+                           (string/repeat " " 1048577))}]})
   (def bounded-report
     (request cursor 72 "textDocument/diagnostic"
              {:textDocument {:uri document-uri}}))
   (test (string/has-prefix? "analysis limit exceeded:"
                             (get-in bounded-report [:result :items 0 :message]))
         true)
+  (test (length (get-in bounded-report [:result :items])) 1)
   (test (get-in (request cursor 69 "janet/serverInfo") [:id]) 69)
   (exit-lsp cursor))
 
