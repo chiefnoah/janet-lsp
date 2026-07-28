@@ -156,3 +156,8 @@
     (comment prin "pre-length: ") (comment pp pre-length)
     (comment prin "character-pos: ") (comment pp character-pos)
     (+ character-pos pre-length)))
+
+(defn from-index [index source]
+  (def before (string/slice source 0 (min index (length source))))
+  (def lines (string/split "\n" before))
+  {:line (dec (length lines)) :character (length (last lines))})

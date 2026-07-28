@@ -1,6 +1,8 @@
 (import ./lookup)
 (import ./utils)
 
+(varfn references-for [])
+
 (defn- tagged-value
   [tag]
   (fn [x]
@@ -292,7 +294,26 @@
   "Return reusable binding labels visible at a source location."
   (map |(string ($ :label)) (get-syms-at-loc loc source)))
 
-(defn references-for [name source]
+(defn- binding-nodes [heads]
+  (array/concat
+    (catseq [head :in heads] (get-value-for-tag :parameters head))
+    (catseq [head :in heads] (get-defined-for-tag :variables head))
+    (catseq [head :in heads] (get-fn-names head))))
+
+(defn definition-at [loc source name]
+  (try
+    (when (has-value? (visible-bindings loc source) name)
+      (def candidates
+        (filter |(let [range ($ :range)]
+                   (or (< (get-in range [:end :line]) (loc :line))
+                       (and (= (get-in range [:end :line]) (loc :line))
+                            (< (get-in range [:end :character]) (loc :character)))))
+                (references-for name source)))
+      (when-let [candidate (last candidates)]
+        {:name name :range (candidate :range)}))
+    ([_] nil)))
+
+(varfn references-for [name source]
   "Return byte-column ranges for code identifiers matching name."
   (def references @[])
   (eachp [line-number line] (string/split "\n" (lookup/code-mask source))

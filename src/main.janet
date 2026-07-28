@@ -609,45 +609,54 @@
   ``
   [state params]
   (let [request-uri (document-key (get-in params ["textDocument" "uri"]))
-        content (get-in state [:documents request-uri :content])
-        eval-env (get-in state [:documents request-uri :eval-env])
+        document (get-in state [:documents request-uri])
+        content (document :content)
+        eval-env (document :eval-env)
         {:line line :character character} (request-byte-position state params content)
-        {:word define-word :range [start end]} (lookup/word-at {:line line :character character} content)]
-    (logging/info (string/format ``
-                                -------------------------
-                                uri is: %s
-                                content length is: %d
-                                line is: %d
-                                character is: %d
-                                define word is: %s
-                                start is: %d
-                                end is: %d
-                                -------------------------
-                                ``
-                                 request-uri (length content) line character define-word start end) [:definition])
-    (logging/info (string/format "symbol is: %s" (symbol define-word)) [:definition])
-    (logging/dbg (string/format "eval-env is: %m" eval-env) [:definition])
-    (logging/info (string/format "symbol lookup is: %m" (get eval-env (symbol define-word) nil)) [:definition])
-    (logging/info (string/format "`:source-map` is: %m" (get (get eval-env (symbol define-word) nil) :source-map nil)) [:definition])
-    (if-let [symbol-lookup (get eval-env (symbol define-word) nil)
-             [uri line col] (get symbol-lookup :source-map nil)
-             target-path (path/abspath uri)
-             found (os/stat target-path)
-             target-content (slurp target-path)
-             target-position (position/byte->lsp-position
-                               target-content
-                               {:line (max 0 (dec line)) :character col}
-                               (state :position-encoding))
-             filepath (uri/path->file-uri target-path)
-             message {:uri filepath
-                      :range {:start target-position
-                              :end target-position}}]
-      (do
-        (logging/message message [:definition])
-        [:ok state message])
-      (do
-        (logging/info "Couldn't find definition" [:definition])
-        [:ok state :null]))))
+        {:word define-word} (lookup/word-at {:line line :character character} content)
+        lexical (and (not (empty? define-word))
+                     (parser/definition-at {:line line :character character}
+                                           content define-word))
+        workspace (document-workspace state document)
+        indexed-name (last (string/split "/" define-word))
+        indexed (and (not lexical) (first (index/definitions workspace indexed-name)))]
+    (cond
+      lexical
+      (let [range (lexical :range)
+            start (position/byte->lsp-position content (range :start) (state :position-encoding))
+            end (position/byte->lsp-position content (range :end) (state :position-encoding))]
+        [:ok state {:uri request-uri :range {:start start :end end}}])
+
+      indexed
+      (let [target-uri (indexed :uri)
+            target-path (uri/file-uri->path target-uri)
+            target-content (or (get-in state [:documents target-uri :content])
+                               (and target-path (os/stat target-path) (slurp target-path)))
+            range (indexed :range)]
+        (if target-content
+          [:ok state {:uri target-uri
+                      :range {:start (position/byte->lsp-position
+                                       target-content (range :start) (state :position-encoding))
+                              :end (position/byte->lsp-position
+                                     target-content (range :end) (state :position-encoding))}}]
+          [:ok state :null]))
+
+      (not (empty? define-word))
+      (if-let [symbol-lookup (get eval-env (symbol define-word) nil)
+               [source-path source-line source-col] (get symbol-lookup :source-map nil)
+               target-path (path/abspath source-path)
+               found (os/stat target-path)
+               target-content (slurp target-path)
+               target-position (position/byte->lsp-position
+                                 target-content
+                                 {:line (max 0 (dec source-line))
+                                  :character (max 0 (dec source-col))}
+                                 (state :position-encoding))]
+        [:ok state {:uri (uri/path->file-uri target-path)
+                    :range {:start target-position :end target-position}}]
+        [:ok state :null])
+
+      [:ok state :null])))
 
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])

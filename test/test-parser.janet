@@ -447,6 +447,16 @@
         2)
   (test (get-syms-at-loc {:line 0 :character 3} "(let [") @[]))
 
+(deftest "resolve visible lexical definitions"
+  (def source "(defn run [value]\n  (let [value 2 [a b] [1 2]]\n    (+ value a b)))")
+  (test (get-in (definition-at {:line 2 :character 8} source "value")
+                [:range :start])
+        {:line 1 :character 8})
+  (test (get-in (definition-at {:line 2 :character 14} source "a")
+                [:range :start])
+        {:line 1 :character 17})
+  (test (definition-at {:line 2 :character 8} source "missing") nil))
+
 (test (get-syms-at-loc
         {:line 0 :character 40}
         "( loop [index :range [0 10] ] (+= total   ))")

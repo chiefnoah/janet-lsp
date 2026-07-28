@@ -483,7 +483,7 @@
     (request cursor 38 "textDocument/definition"
              {:textDocument {:uri encoded-uri}
               :position {:line 0 :character 6}}))
-  (test (= (get-in definition [:result :uri]) document-uri) true)
+  (test (= (get-in definition [:result :uri]) encoded-uri) true)
   (notify cursor "textDocument/didClose" {:textDocument {:uri encoded-uri}})
   (test (= (get-in (read-output cursor) [:params :uri]) encoded-uri) true)
   (exit-lsp cursor))
@@ -498,7 +498,8 @@
     (request cursor 39 "textDocument/definition"
              {:textDocument {:uri untitled-uri}
               :position {:line 1 :character 4}}))
-  (test (get-in definition [:result]) :null))
+  (test (= (get-in definition [:result :uri]) untitled-uri) true)
+  (test (get-in definition [:result :range :start :line]) 0))
 
 (deftest: with-process-open "document change publishes diagnostics" [cursor]
   (notify cursor "textDocument/didChange"
@@ -628,6 +629,44 @@
                     :position {:line 2 :character 3}})
           [:result :contents :kind])
         "markdown")
+  (exit-lsp cursor))
+
+(deftest "resolve lexical and indexed definitions"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def second-uri (uri/path->file-uri
+                    (path/abspath "test/resources/format-file-before.txt")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1
+                          :text "(def shared 1)\nshared\n"}})
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri second-uri :languageId "janet" :version 1
+                          :text "(import ./main)\nmain/shared\n"}})
+  (def local
+    (request cursor 104 "textDocument/definition"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 3}}))
+  (test (= (get-in local [:result :uri]) document-uri) true)
+  (test (get-in local [:result :range :start :line]) 0)
+  (def imported
+    (request cursor 105 "textDocument/definition"
+             {:textDocument {:uri second-uri}
+              :position {:line 1 :character 6}}))
+  (test (= (get-in imported [:result :uri]) document-uri) true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text "(defn run [value] (let [value 2] value))\n"}]})
+  (def shadowed
+    (request cursor 106 "textDocument/definition"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 35}}))
+  (test (get-in shadowed [:result :range :start :character]) 24)
+  (test (get-in
+          (request cursor 107 "textDocument/definition"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 0 :character 1}})
+          [:result])
+        :null)
   (exit-lsp cursor))
 
 (deftest "track active signature parameters across encodings"
