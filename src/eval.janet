@@ -81,6 +81,17 @@
                  :severity 1}))
   [diagnostics (make-env (or base-env root-env))])
 
+(defn runtime-location [fib]
+  (try
+    (let [frame (first (debug/stack fib))
+          slots (and frame (frame :slots))
+          line (and (indexed? slots) (> (length slots) 2) (slots 1))
+          column (and (indexed? slots) (> (length slots) 2) (slots 2))]
+      (if (and (number? line) (number? column))
+        [line column]
+        [1 1]))
+    ([_] [1 1])))
+
 (defn eval-buffer [str &opt filename options]
   (logging/info (string/format "`eval-buffer` received filename: `%s`" (or filename "none")) [:evaluation])
   (logging/dbg (string/format "`eval-buffer` received str: `%s`" str) [:evaluation])
@@ -90,6 +101,13 @@
   (def trusted (options :trusted))
   (def base-env (options :base-env))
   (def unique-paths (options :unique-paths))
+  (def max-source-bytes (or (options :max-source-bytes) 1048576))
+  (if (> (length str) max-source-bytes)
+    [[{:message (string/format "analysis limit exceeded: source is larger than %d bytes"
+                               max-source-bytes)
+       :location [1 1]
+       :severity 1}]
+     (make-env (or base-env root-env))]
   (if (not trusted)
     (safe-buffer str filename base-env)
     (do
@@ -130,12 +148,13 @@
                             :source filename})
            ([err fib]
              (array/push returnval {:message (string/format "runtime error: %s" err)
-                                    :location (tuple/slice ((first (debug/stack fib)) :slots) 1 3)
+                                    :location (runtime-location fib)
                                     :severity 1})))
          returnval) :e fresh-env))
+  (fiber/setmaxstack eval-fiber 2048)
   (def eval-fiber-return (resume eval-fiber))
   (logging/dbg (string/format "`eval-buffer` is returning: %m" eval-fiber-return) [:evaluation])
-  [eval-fiber-return fresh-env])))
+  [eval-fiber-return fresh-env]))))
 
 # tests
 
@@ -203,3 +222,12 @@
         :message "compile error: macro arity mismatch, expected at least 1, got 0"
         :severity 1}]
      @{:current-file "test.janet"}]))
+
+(deftest "runtime diagnostics tolerate missing stacks"
+  (test (runtime-location nil) [1 1]))
+
+(deftest "analysis source size is bounded"
+  (def [diagnostics _]
+    (eval-buffer "12345" "large.janet" {:trusted true :max-source-bytes 4}))
+  (test (string/has-prefix? "analysis limit exceeded" (get-in diagnostics [0 :message]))
+        true))

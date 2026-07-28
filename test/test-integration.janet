@@ -531,6 +531,61 @@
   (test (get-in response [:result :kind]) "full")
   (test (get-in response [:result :items]) @[]))
 
+(deftest: with-process "push diagnostics report zero-based parse positions" [cursor]
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text "("}})
+  (def published (read-output cursor))
+  (test (get-in published [:params :diagnostics 0 :range :start :line]) 0)
+  (test (get-in published [:params :diagnostics 0 :range :start :character]) 0)
+  (test (string/has-prefix? "parse error:"
+                            (get-in published [:params :diagnostics 0 :message]))
+        true))
+
+(deftest "pull diagnostics survive compile and bounded runtime failures"
+  (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text "(freeze )"}})
+  (def compile-report
+    (request cursor 67 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in compile-report [:result :items 0 :range :start :line]) 0)
+  (test (get-in compile-report [:result :items 0 :range :start :character]) 0)
+  (test (string/has-prefix? "compile error:"
+                            (get-in compile-report [:result :items 0 :message]))
+        true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text "(defn boom :flycheck [] (error \"boom\"))\n(boom)\n"}]})
+  (def runtime-report
+    (request cursor 68 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (string/has-prefix? "runtime error:"
+                            (get-in runtime-report [:result :items 0 :message]))
+        true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 3}
+           :contentChanges [{:text (string/repeat " " 1048577)}]})
+  (def bounded-report
+    (request cursor 72 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (string/has-prefix? "analysis limit exceeded:"
+                            (get-in bounded-report [:result :items 0 :message]))
+        true)
+  (test (get-in (request cursor 69 "janet/serverInfo") [:id]) 69)
+  (exit-lsp cursor))
+
+(deftest: with-process "cancel pull diagnostic requests" [cursor]
+  (notify cursor "$/cancelRequest" {:id 70})
+  (def cancelled
+    (request cursor 70 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in cancelled [:error :code]) -32800)
+  (test (get-in (request cursor 71 "janet/serverInfo") [:id]) 71))
+
 (deftest: with-process-open "completion includes core and local bindings" [cursor]
   (def response
     (request cursor 4 "textDocument/completion"

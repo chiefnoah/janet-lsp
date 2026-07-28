@@ -47,7 +47,8 @@
         {:location [line col] :message message :severity severity}
         (when-let [lsp-position
                    (position/byte->lsp-position
-                     content {:line (max 0 (dec line)) :character col} encoding)]
+                     content {:line (max 0 (dec line))
+                              :character (max 0 (dec col))} encoding)]
           (array/push items
                       {:range {:start lsp-position :end lsp-position}
                        :message message
@@ -532,6 +533,12 @@
     "verbose" nil)
   [:noresponse state])
 
+(defn on-cancel-request [state params]
+  (def id (get params "id"))
+  (when (rpc/valid-id? id)
+    (put-in state [:cancelled-requests id] true))
+  [:noresponse state])
+
 (defn on-janet-tell-joke [state params]
   (let [message {:question "What's brown and sticky?"
                  :answer "A stick!"}]
@@ -608,6 +615,7 @@
       # "textDocument/documentSymbol" (on-document-symbols state params) TODO: Implement this? See src/lsp/api.ts:121
       "textDocument/definition" (on-document-definition state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
+      "$/cancelRequest" (on-cancel-request state params)
       "janet/serverInfo" (on-janet-serverinfo state params)
       "janet/tellJoke" (on-janet-tell-joke state params)
       "enableDebug" (on-enable-debug state params)
@@ -673,6 +681,11 @@
     (do
       (write-rpc-error id code error-message data)
       state)
+    (if (and (not notification?) (has-key? (state :cancelled-requests) id))
+      (do
+        (put (state :cancelled-requests) id nil)
+        (write-rpc-error id -32800 "Request cancelled")
+        state)
     (match (lifecycle-action message state)
       :ignore state
       [code error-message data]
@@ -725,7 +738,7 @@
             (write-rpc-error id -32603 "Internal error"))
           new-state)
 
-        [:exit status] [:exit status])))))
+        [:exit status] [:exit status]))))))
 
 (defn message-loop [&named state]
   (logging/info "Loop enter" [:core] 1)
@@ -756,6 +769,7 @@
                          :lifecycle :uninitialized
                          :position-encoding "utf-16"
                          :pending-requests @{}
+                         :cancelled-requests @{}
                          :trusted-workspaces @[]
                          :workspaces @{}
                          :standalone-workspace @{:uri nil
