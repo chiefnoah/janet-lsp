@@ -818,6 +818,44 @@
           true)
     (exit-lsp cursor)))
 
+(deftest "emit conservative configurable parameter hints"
+  (def source "(do \"😀\" (put table (put source key value) value) (string a b) (unknown x))")
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1 :text source}})
+  (def response
+    (request cursor 121 "textDocument/inlayHint"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 0}
+                      :end {:line 0 :character 100}}}))
+  (test (map |($ :label) (get-in response [:result])) @["ds:" "ds:"])
+  (test (all |(and (= 2 ($ :kind)) ($ :paddingRight)
+                   (= "markdown" (get-in $ [:tooltip :kind])))
+             (get-in response [:result]))
+        true)
+  (def restricted
+    (request cursor 122 "textDocument/inlayHint"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 24}
+                      :end {:line 0 :character 35}}}))
+  (test (length (get-in restricted [:result])) 1)
+  (exit-lsp cursor)
+
+  (def disabled
+    (start-lsp {:textDocument {:diagnostic {}}}
+               {:inlayHints {:parameterNames false}}))
+  (test (get-in (disabled :initialize) [:result :capabilities :inlayHintProvider]) false)
+  (notify disabled "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1 :text source}})
+  (test (get-in
+          (request disabled 123 "textDocument/inlayHint"
+                   {:textDocument {:uri document-uri}
+                    :range {:start {:line 0 :character 0}
+                            :end {:line 0 :character 100}}})
+          [:result])
+        @[])
+  (exit-lsp disabled))
+
 (deftest: with-process-open "pull diagnostics returns a full report" [cursor]
   (def response
     (request cursor 3 "textDocument/diagnostic"

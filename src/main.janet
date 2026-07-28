@@ -508,6 +508,8 @@
   (put state :position-encoding position-encoding)
   (put state :work-done-progress
        (not (not (get-in params ["capabilities" "window" "workDoneProgress"]))))
+  (put state :inlay-parameter-hints
+       (not= false (get-in params ["initializationOptions" "inlayHints" "parameterNames"])))
   (def trusted-workspaces
     (or (get-in params ["initializationOptions" "trustedWorkspaces"])
         (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
@@ -547,6 +549,7 @@
                                           :tokenModifiers semantic-token-modifiers}
                                  :full true}
                                 :codeActionProvider {:codeActionKinds ["quickfix"]}
+                                :inlayHintProvider (state :inlay-parameter-hints)
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -949,6 +952,54 @@
                                            :newText closing}]}]}}))))))
   [:ok state actions])
 
+(defn- position-in-range? [position range]
+  (def start (get range "start"))
+  (def end (get range "end"))
+  (and (or (> (position :line) (get start "line"))
+           (and (= (position :line) (get start "line"))
+                (>= (position :character) (get start "character"))))
+       (or (< (position :line) (get end "line"))
+           (and (= (position :line) (get end "line"))
+                (<= (position :character) (get end "character"))))))
+
+(defn on-inlay-hint [state params]
+  (if (not (state :inlay-parameter-hints))
+    [:ok state @[]]
+    (let [document-uri (get-in params ["textDocument" "uri"])
+          document (get-in state [:documents document-uri])
+          content (document :content)
+          requested (get params "range")
+          hints @[]]
+      (each reference ((index/analyze document-uri content) :references)
+        (def byte-start (get-in reference [:range :start]))
+        (def byte-end (get-in reference [:range :end]))
+        (def position (position/byte->lsp-position content byte-start
+                                                   (state :position-encoding)))
+        (when (and position (position-in-range? position requested))
+          (def context (lookup/call-context byte-end content))
+          (when (and context
+                     (not (deep= byte-start
+                                 (lookup/from-index (first (context :range)) content))))
+            (def signature (doc/get-signature (symbol (context :callee)) (document :eval-env)))
+            (when signature
+              (def tokens (filter |(not (empty? $))
+                                  (string/split " " (string/trim signature "()"))))
+              (def parameters (array/slice tokens 1))
+              (def active (context :active-parameter))
+              (when (and (< active (length parameters))
+                         (not (any? (map |(string/has-prefix? "&" $) parameters))))
+                (def parameter (parameters active))
+                (when (not= parameter (reference :name))
+                  (array/push hints
+                              {:position position
+                               :label (string parameter ":")
+                               :kind 2
+                               :paddingRight true
+                               :tooltip {:kind "markdown"
+                                         :value (string "Parameter `" parameter "` of `"
+                                                        (context :callee) "`")}})))))))
+      [:ok state (distinct hints)])))
+
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
@@ -1015,6 +1066,7 @@
    "textDocument/rename" true
    "textDocument/semanticTokens/full" true
    "textDocument/codeAction" true
+   "textDocument/inlayHint" true
    "textDocument/documentSymbol" true})
 
 (def position-request-methods
@@ -1059,6 +1111,7 @@
       "textDocument/rename" (on-rename state params)
       "textDocument/semanticTokens/full" (on-semantic-tokens-full state params)
       "textDocument/codeAction" (on-code-action state params)
+      "textDocument/inlayHint" (on-inlay-hint state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)

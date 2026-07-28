@@ -14,6 +14,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
 - Local and runtime source-map definition lookup
+- Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis
 
 ### Experimental Features
@@ -103,6 +104,21 @@ An open document outside all configured file workspaces is treated as a
 standalone file. It retains parsing, core documentation, hover, signature, and
 local completion features, but remains restricted and does not inherit module
 paths, startup configuration, or trust from another workspace.
+
+### Inlay Hints
+
+Parameter-name hints are enabled by default. Janet LSP emits them only for
+resolved, non-variadic calls when the argument name does not already match the
+parameter, and only inside the requested range. Hints are informational and do
+not include text edits. Disable the category with:
+
+```json
+{
+  "initializationOptions": {
+    "inlayHints": {"parameterNames": false}
+  }
+}
+```
 
 ## Getting Started (for Development)
 
