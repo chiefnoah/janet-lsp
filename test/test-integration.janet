@@ -791,6 +791,33 @@
           :null)
     (exit-lsp cursor)))
 
+(deftest "emit sorted semantic tokens in negotiated encodings"
+  (each encoding ["utf-16" "utf-8"]
+    (def capabilities
+      (if (= encoding "utf-8")
+        {:general {:positionEncodings ["utf-8"]}
+         :textDocument {:diagnostic {}}}
+        {:textDocument {:diagnostic {}}}))
+    (def cursor (start-lsp capabilities))
+    (test (get-in (cursor :initialize)
+                  [:result :capabilities :semanticTokensProvider :full])
+          true)
+    (notify cursor "textDocument/didOpen"
+            {:textDocument {:uri document-uri :languageId "janet" :version 1
+                            :text "(def 😀 1)\n😀 # hidden\n\"hidden\"\n"}})
+    (def response
+      (request cursor 117 "textDocument/semanticTokens/full"
+               {:textDocument {:uri document-uri}}))
+    (def data (get-in response [:result :data]))
+    (test (= 0 (% (length data) 5)) true)
+    (test (all |(>= $ 0)
+               (map |(data $) (range 0 (length data) 5)))
+          true)
+    (test (has-value? (map |(data (+ $ 2)) (range 0 (length data) 5))
+                      (if (= encoding "utf-8") 4 2))
+          true)
+    (exit-lsp cursor)))
+
 (deftest: with-process-open "pull diagnostics returns a full report" [cursor]
   (def response
     (request cursor 3 "textDocument/diagnostic"

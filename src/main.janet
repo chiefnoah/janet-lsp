@@ -20,6 +20,10 @@
 (use judge)
 
 (def version "0.0.12")
+(def semantic-token-types
+  ["namespace" "type" "function" "macro" "variable" "parameter"
+   "keyword" "string" "number" "comment" "operator"])
+(def semantic-token-modifiers ["declaration" "definition" "readonly" "defaultLibrary"])
 (def indexer-script (path/join (path/dirname (dyn :current-file)) "indexer.janet"))
 (defn janet-executable []
   (def executable (dyn :executable))
@@ -524,6 +528,10 @@
                                 :workspaceSymbolProvider true
                                 :referencesProvider true
                                 :renameProvider {:prepareProvider true}
+                                :semanticTokensProvider
+                                {:legend {:tokenTypes semantic-token-types
+                                          :tokenModifiers semantic-token-modifiers}
+                                 :full true}
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -833,6 +841,60 @@
                :edits edits})}]))
       [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"])))
 
+(defn semantic-token-records [state document-uri]
+  (def document (get-in state [:documents document-uri]))
+  (def record (index/analyze document-uri (document :content)))
+  (def definitions (record :definitions))
+  (def records @[])
+  (each definition definitions
+    (array/push records {:range (definition :selection-range)
+                         :type (if (= 12 (definition :kind)) 2 4) :modifiers 3})
+    (each parameter (definition :children)
+      (array/push records {:range (parameter :selection-range) :type 5 :modifiers 1})))
+  (each reference (record :references)
+    (def range (reference :range))
+    (unless (any? (map |(deep= range ($ :range)) records))
+      (def name (reference :name))
+      (def definition (first (filter |(= name ($ :name)) definitions)))
+      (def binding (get (document :eval-env) (symbol name) nil))
+      (def token-type
+        (cond
+          (string/has-prefix? ":" name) 6
+          (scan-number name) 8
+          (string/find "/" name) 0
+          definition (if (= 12 (definition :kind)) 2 4)
+          (and binding (binding :macro)) 3
+          (and binding (has-value? [:function :cfunction] (type (binding :value)))) 2
+          4))
+      (array/push records {:range range :type token-type :modifiers 0})))
+  (sort-by |[(get-in $ [:range :start :line]) (get-in $ [:range :start :character])]
+           records))
+
+(defn on-semantic-tokens-full [state params]
+  (def document-uri (get-in params ["textDocument" "uri"]))
+  (def document (get-in state [:documents document-uri]))
+  (def data @[])
+  (var previous-line 0)
+  (var previous-character 0)
+  (each token (semantic-token-records state document-uri)
+    (def range (token :range))
+    (def start (position/byte->lsp-position (document :content) (range :start)
+                                            (state :position-encoding)))
+    (def end (position/byte->lsp-position (document :content) (range :end)
+                                          (state :position-encoding)))
+    (when (and start end (= (start :line) (end :line))
+               (> (end :character) (start :character)))
+      (def delta-line (- (start :line) previous-line))
+      (def delta-character (if (= delta-line 0)
+                             (- (start :character) previous-character)
+                             (start :character)))
+      (array/concat data [delta-line delta-character
+                          (- (end :character) (start :character))
+                          (token :type) (token :modifiers)])
+      (set previous-line (start :line))
+      (set previous-character (start :character))))
+  [:ok state {:data data}])
+
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
@@ -897,6 +959,7 @@
    "textDocument/references" true
    "textDocument/prepareRename" true
    "textDocument/rename" true
+   "textDocument/semanticTokens/full" true
    "textDocument/documentSymbol" true})
 
 (def position-request-methods
@@ -939,6 +1002,7 @@
       "textDocument/references" (on-references state params)
       "textDocument/prepareRename" (on-prepare-rename state params)
       "textDocument/rename" (on-rename state params)
+      "textDocument/semanticTokens/full" (on-semantic-tokens-full state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)
