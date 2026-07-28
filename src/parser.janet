@@ -49,7 +49,8 @@
   (peg/compile
     ~{:ws (+ (set " \t\r\f\0\v\n"))
       :readermac (set "';~,|")
-      :symchars (+ :w "\x80\xFF" (set "!$%&*+-./:<?=>@^_"))
+      :symchars (+ (range "09" "AZ" "az" "\x80\xFF")
+                   (set "!$%&*+-./:<?=>@^_"))
       :token (some :symchars)
       :escape (* "\\" (+ (set "ntrzfev0ab'?\"\\")
                          (* "x" :h :h)
@@ -185,6 +186,10 @@
   "Turn a string of source code into an AST"
   [source]
   {:tag :top :value (peg/match parse-peg source)})
+
+(defn syntax-tree [source]
+  "Parse source into positioned syntax nodes without evaluating it."
+  (make-tree source))
 
 (defn- get-value-for-tag
   [tag node]

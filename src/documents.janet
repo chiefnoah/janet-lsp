@@ -32,6 +32,7 @@
                              workspace version)]
         (merge-into document {:content content :version version :eval-env env})
         (index/update workspace (document :uri) content)
+        (index/add-generated workspace (document :uri) env)
         (if (dyn :push-diagnostics)
           (publish state document diagnostics version)
           [:noresponse state])))))
@@ -53,6 +54,7 @@
                            (state :position-encoding) workspace (document :version))
           report {:kind "full" :items items}]
       (put document :eval-env env)
+      (index/add-generated workspace (document :uri) env)
       (logging/message report [:diagnostics])
       [:ok state report])
     [:ok state :null]))
@@ -90,6 +92,7 @@
                    :eval-env env}]
     (put (state :documents) document-uri document)
     (index/update workspace document-uri content)
+    (index/add-generated workspace document-uri env)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
       (publish state document items version)

@@ -597,13 +597,52 @@
         :null)
   (exit-lsp cursor))
 
+(deftest "navigate and rename through resolved module aliases"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def imported-uri
+    (uri/path->file-uri (path/abspath "test/resources/format-file-before.txt")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1
+                          :text "(def shared 1)\nshared\n"}})
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri imported-uri :languageId "janet" :version 1
+                          :text (string "(import ./format-file-after :as module)\n"
+                                        "module/shared\n")}})
+  (def definition
+    (request cursor 136 "textDocument/definition"
+             {:textDocument {:uri imported-uri}
+              :position {:line 1 :character 8}}))
+  (test (= (get-in definition [:result :uri]) document-uri) true)
+  (def references
+    (request cursor 137 "textDocument/references"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 2}
+              :context {:includeDeclaration false}}))
+  (test (length (get-in references [:result])) 2)
+  (test (has-value? (map |($ :uri) (get-in references [:result])) imported-uri)
+        true)
+
+  (def renamed
+    (request cursor 138 "textDocument/rename"
+             {:textDocument {:uri imported-uri}
+              :position {:line 1 :character 8}
+              :newName "renamed"}))
+  (def imported-change
+    (first (filter |(= imported-uri (get-in $ [:textDocument :uri]))
+                   (get-in renamed [:result :documentChanges]))))
+  (test (get-in imported-change [:edits 0 :newText]) "module/renamed")
+  (test (length (get-in renamed [:result :documentChanges])) 2)
+  (exit-lsp cursor))
+
 (deftest "return document and workspace symbols"
   (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
   (def second-uri (uri/path->file-uri
                     (path/abspath "test/resources/format-file-before.txt")))
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri document-uri :languageId "janet" :version 1
-                          :text "(defn shared [x y] (+ x y))\n(def value 1)\n"}})
+                          :text (string "(defn shared [x y] "
+                                        "(defn nested [z] z) (+ x y))\n"
+                                        "(def value 1)\n")}})
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri second-uri :languageId "janet" :version 1
                           :text "(defn shared [other] other)\n"}})
@@ -613,6 +652,8 @@
   (test (get-in document-symbols [:result 0 :name]) "shared")
   (test (get-in document-symbols [:result 0 :children 0 :name]) "x")
   (test (get-in document-symbols [:result 0 :children 1 :name]) "y")
+  (test (get-in document-symbols [:result 0 :children 2 :name]) "nested")
+  (test (get-in document-symbols [:result 0 :children 2 :children 0 :name]) "z")
   (test (get-in document-symbols [:result 1 :name]) "value")
   (def workspace-symbols (request cursor 109 "workspace/symbol" {:query "sha"}))
   (test (length (get-in workspace-symbols [:result])) 2)

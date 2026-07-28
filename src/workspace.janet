@@ -211,7 +211,9 @@
                        (document :version)))
     (put document :eval-env env)
     (index/update (server-utils/document-workspace state document)
-                  (document :uri) (document :content)))
+                  (document :uri) (document :content))
+    (index/add-generated (server-utils/document-workspace state document)
+                         (document :uri) env))
   state)
 
 (defn on-folders-changed [state params]

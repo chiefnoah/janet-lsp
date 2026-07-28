@@ -39,6 +39,43 @@
   (index/remove workspace "file:///workspace/main.janet")
   (test (index/definitions workspace "value") @[]))
 
+(deftest "index multiline syntax and resolve module identities"
+  (def multiline
+    (index/analyze
+      "file:///workspace/multiline.janet"
+      "(defn\n  outer :doc \"docs\"\n  [[a b] &opt c]\n  (defn inner [x] x)\n  (+ a c))\n"))
+  (test (map |($ :name) (multiline :definitions)) @["outer" "inner"])
+  (test (map |($ :name) (get-in multiline [:definitions 0 :children]))
+        @["a" "b" "c"])
+  (test (get-in multiline [:definitions 0 :range :end :line]) 4)
+  (test (= (get-in multiline [:definitions 1 :container])
+           (get-in multiline [:definitions 0 :identity]))
+        true)
+
+  (def workspace @{:index @{}})
+  (index/update workspace "file:///workspace/value.janet"
+                "(def shared 1)\nshared\n")
+  (index/update workspace "file:///workspace/middle.janet"
+                "(use ./value :only [shared] :export true)\n")
+  (index/update workspace "file:///workspace/main.janet"
+                "(import ./middle :as module)\nmodule/shared\n")
+  (def definition
+    (index/resolve-definition workspace "file:///workspace/main.janet"
+                              "module/shared"))
+  (test (definition :uri) "file:///workspace/value.janet")
+  (test (length (index/references-by-identity workspace (definition :identity))) 4)
+  (index/update workspace "file:///workspace/value.janet" "(def replacement 1)\n")
+  (test (index/references-by-identity workspace (definition :identity)) @[])
+
+  (def generated-source
+    "(defmacro make-value [] ~(def generated-value 1))\n(make-value)\n")
+  (def [_ generated-env]
+    (eval/eval-buffer generated-source "/tmp/generated-index.janet" {:trusted true}))
+  (index/update workspace "file:///tmp/generated-index.janet" generated-source)
+  (index/add-generated workspace "file:///tmp/generated-index.janet" generated-env)
+  (test (get-in (first (index/definitions workspace "generated-value")) [:generated])
+        true))
+
 (deftest "warn only for provably unused function parameters"
   (def diagnostics
     (lint/analyze "(defn run [used unused _ignored] (+ used 1))\n"))

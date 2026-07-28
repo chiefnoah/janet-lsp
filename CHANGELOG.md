@@ -27,6 +27,9 @@ Format for entires is <version-string> - release date.
 - Restricted analysis now validates provable same-file positional and named
   calls. Completion and signature help expose `&named` parameters and suppress
   names already supplied by the caller.
+- Workspace indexing now uses positioned parser nodes for multiline definitions,
+  nested symbols, destructured parameters, imports, aliases, selective imports,
+  re-exports, generated trusted definitions, and cross-file binding identities.
 
 ## 0.0.11 - 2026-02-14
 

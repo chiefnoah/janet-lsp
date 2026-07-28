@@ -14,8 +14,16 @@
   (def word (lookup/word-at location content))
   (def name (word :word))
   (def workspace (server-utils/document-workspace state document))
-  (def local (and (not (empty? name))
-                  (parser/definition-at location content name)))
+  (def resolved (and (not (empty? name))
+                     (parser/definition-at location content name)))
+  (def indexed (and (not (empty? name))
+                    (index/resolve-definition workspace document-uri name)))
+  (def indexed-local?
+    (and resolved indexed
+         (server-utils/same-position?
+           (get-in resolved [:range :start])
+           (get-in indexed [:selection-range :start]))))
+  (def local (and resolved (not indexed-local?) resolved))
   {:uri document-uri
    :document document
    :content content
@@ -24,8 +32,7 @@
    :name name
    :workspace workspace
    :local local
-   :indexed (and (not local) (not (empty? name))
-                 (first (index/definitions workspace (server-utils/base-name name))))})
+   :indexed (and (not local) indexed)})
 
 (defn on-definition [state params]
   (def context (symbol-context state params))
@@ -64,24 +71,30 @@
 
     [:ok state :null]))
 
-(defn- document-symbol [state content definition]
+(defn- document-symbol [state content definition definitions]
   {:name (definition :name)
    :kind (definition :kind)
    :range (server-utils/lsp-range state content (definition :range))
    :selectionRange (server-utils/lsp-range state content
                                             (definition :selection-range))
-   :children (map |{:name ($ :name)
-                    :kind ($ :kind)
-                    :range (server-utils/lsp-range state content ($ :range))
-                    :selectionRange (server-utils/lsp-range
-                                      state content ($ :selection-range))}
-                  (definition :children))})
+   :children
+   (array
+     ;(map |{:name ($ :name)
+             :kind ($ :kind)
+             :range (server-utils/lsp-range state content ($ :range))
+             :selectionRange (server-utils/lsp-range
+                               state content ($ :selection-range))}
+           (definition :children))
+     ;(map |(document-symbol state content $ definitions)
+           (filter |(= (definition :identity) ($ :container)) definitions)))})
 
 (defn on-document-symbols [state params]
   (if-let [document (server-utils/document state params)]
-    (let [record (index/analyze (document :uri) (document :content))]
-      [:ok state (map |(document-symbol state (document :content) $)
-                      (record :definitions))])
+    (let [record (index/analyze (document :uri) (document :content))
+          definitions (record :definitions)]
+      [:ok state
+       (map |(document-symbol state (document :content) $ definitions)
+            (filter |(nil? ($ :container)) definitions))])
     [:ok state @[]]))
 
 (defn on-workspace-symbols [state params]
@@ -113,12 +126,10 @@
                   (get-in resolved [:range :start])
                   (get-in context [:local :range :start])))
         (array/push locations {:uri (context :uri) :range (reference :range)})))
-    (each record (values ((context :workspace) :index))
-      (each reference (record :references)
-        (def base-name (server-utils/base-name (context :name)))
-        (when (or (= base-name (reference :name))
-                  (string/has-suffix? (string "/" base-name) (reference :name)))
-          (array/push locations {:uri (reference :uri) :range (reference :range)})))))
+    (each reference
+          (index/references-by-identity (context :workspace)
+                                        (get-in context [:indexed :identity]))
+      (array/push locations {:uri (reference :uri) :range (reference :range)})))
   (unless include-declaration
     (def definition (or (context :local) (context :indexed)))
     (def definition-uri (if (context :local) (context :uri)

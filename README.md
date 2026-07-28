@@ -14,6 +14,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
 - Local, imported, indexed, and runtime source-map definition lookup
+- Parser-backed multiline symbols, module aliases, selective imports, and re-exports
 - Document/workspace symbols, binding-aware references, and workspace rename
 - Full-document semantic tokens and deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
@@ -24,8 +25,6 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Trust-gated execution-based workspace analysis, including startup files,
   imports, macros, and `:flycheck` functions
 - The network debug console and runtime logging controls
-- Definition lookup outside the current document, which depends on available
-  Janet source maps and module metadata
 
 ## Caveats
 
