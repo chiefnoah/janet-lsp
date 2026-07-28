@@ -2,6 +2,7 @@
 
 (import ../src/main)
 (import ../src/transport)
+(import ../src/uri)
 (import spork/json)
 (import spork/path)
 
@@ -50,8 +51,27 @@
   (test (file/read stream :all) @"Content-Length: 4\r\n\r\nbody")
   (file/close stream))
 
-(test (peg/match main/uri-percent-encoding-peg "file:///c%3A/Users/pete/Desktop/code/libmpsse")
-      @["file:///c:/Users/pete/Desktop/code/libmpsse"])
+(deftest "convert file URIs and paths"
+  (test (uri/file-uri->path "file:///tmp/a%20b%25%23%3F%E2%98%83.janet")
+        "/tmp/a b%#?☃.janet")
+  (test (uri/path->file-uri "/tmp/a b%#?☃.janet")
+        "file:///tmp/a%20b%25%23%3F%E2%98%83.janet")
+  (test (uri/file-uri->path "file:///C:/Users/Janet%20User/main.janet")
+        "C:/Users/Janet User/main.janet")
+  (test (uri/path->file-uri "C:\\Users\\Janet User\\main.janet")
+        "file:///C:/Users/Janet%20User/main.janet")
+  (test (uri/file-uri->path "file://server/share/a%20b.janet")
+        "//server/share/a b.janet")
+  (test (uri/path->file-uri "//server/share/a b.janet")
+        "file://server/share/a%20b.janet")
+  (test (uri/path->file-uri "/tmp/[]@!$&'()*+,;=.janet")
+        "file:///tmp/%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D.janet"))
+
+(deftest "reject non-file and malformed URIs"
+  (test (uri/file-uri->path "untitled:buffer") nil)
+  (test (uri/file-uri->path "file:///tmp/a#fragment") nil)
+  (test-error (uri/file-uri->path "file:///tmp/%GG")
+              "invalid percent escape in URI"))
 
 (deftest "test binding-to-lsp-item"
   (def eval-env (table/proto-flatten (make-env root-env)))

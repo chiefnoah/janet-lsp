@@ -206,6 +206,33 @@
   (test (= (get-in (cursor :open) [:params :uri]) document-uri) true)
   (test (get-in (cursor :open) [:params :diagnostics]) @[]))
 
+(deftest: with-process "preserve encoded client document URIs" [cursor]
+  (def encoded-uri
+    (string/replace "format-file-after.txt" "%66ormat-file-after.txt" document-uri))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri encoded-uri :languageId "janet"
+                          :version 1 :text document-text}})
+  (test (= (get-in (read-output cursor) [:params :uri]) encoded-uri) true)
+  (def definition
+    (request cursor 38 "textDocument/definition"
+             {:textDocument {:uri encoded-uri}
+              :position {:line 0 :character 6}}))
+  (test (= (get-in definition [:result :uri]) document-uri) true)
+  (notify cursor "textDocument/didClose" {:textDocument {:uri encoded-uri}})
+  (test (= (get-in (read-output cursor) [:params :uri]) encoded-uri) true))
+
+(deftest: with-process "non-file documents avoid filesystem operations" [cursor]
+  (def untitled-uri "untitled:janet-lsp-buffer")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri untitled-uri :languageId "janet"
+                          :version 1 :text "(def local-value 1)\nlocal-value\n"}})
+  (test (= (get-in (read-output cursor) [:params :uri]) untitled-uri) true)
+  (def definition
+    (request cursor 39 "textDocument/definition"
+             {:textDocument {:uri untitled-uri}
+              :position {:line 1 :character 4}}))
+  (test (get-in definition [:result]) :null))
+
 (deftest: with-process-open "document change publishes diagnostics" [cursor]
   (notify cursor "textDocument/didChange"
           {:textDocument {:uri document-uri :version 2}

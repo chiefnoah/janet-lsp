@@ -8,6 +8,7 @@
 (import ./rpc)
 (import ./parser)
 (import ./transport)
+(import ./uri)
 
 (import cmd)
 (import spork/argparse)
@@ -29,14 +30,13 @@
 (eachk k jpm-defs
   (match (type k) :symbol (put-in jpm-defs [k :source-map] nil) nil))
 
-(defn run-diagnostics [uri content]
+(defn run-diagnostics [filepath content]
   (let [items @[]
         [diagnostics env]
         (eval/eval-buffer content
-                          (path/relpath
-                            (os/cwd)
-                            (if (string/has-prefix? "file:" uri)
-                              (string/slice uri 5) uri)))]
+                          (if filepath
+                            (path/relpath (os/cwd) filepath)
+                            "untitled.janet"))]
 
     (logging/dbg (string/format "`eval-buffer` returned: %m" diagnostics) [:evaluation])
 
@@ -54,32 +54,8 @@
     (logging/dbg (string/format "`run-diagnostics` is returning this eval-context: %m" env) [:evaluation])
     [items env]))
 
-(def uri-percent-encoding-peg
-  ~{:bang (/ (<- "%21") "!")
-    :hash (/ (<- "%23") "#")
-    :dollar (/ (<- "%24") "$")
-    :amp (/ (<- "%26") "&")
-    :tick (/ (<- "%27") "'")
-    :lparen (/ (<- "%28") "(")
-    :rparen (/ (<- "%29") ")")
-    :star (/ (<- (* "%2" (+ "A" "a"))) "*")
-    :plus (/ (<- (* "%2" (+ "B" "b"))) "+")
-    :comma (/ (<- (* "%2" (+ "C" "c"))) ",")
-    :slash (/ (<- (* "%2" (+ "F" "f"))) "/")
-    :colon (/ (<- (* "%3" (+ "A" "a"))) ":")
-    :semi (/ (<- (* "%3" (+ "B" "b"))) ";")
-    :equals (/ (<- (* "%3" (+ "D" "d"))) "=")
-    :question (/ (<- (* "%3" (+ "F" "f"))) "?")
-    :at (/ (<- "%40") "@")
-    :lbracket (/ (<- (* "%5" (+ "B" "b"))) "[")
-    :rbracket (/ (<- (* "%5" (+ "D" "d"))) "]")
-    :main (% (some (+ :bang :hash :dollar :amp :tick :lparen
-                      :rparen :star :plus :comma :slash :colon
-                      :semi :equals :question :at :lbracket
-                      :rbracket '1)))})
-
 (defn document-key [uri]
-  (first (peg/match uri-percent-encoding-peg uri)))
+  uri)
 
 (defn on-document-change
   ``
@@ -99,7 +75,7 @@
                  (<= version current-version)))
       [:noresponse state]
       (let [content (get-in params ["contentChanges" 0 "text"])
-            [diagnostics env] (run-diagnostics uri content)]
+            [diagnostics env] (run-diagnostics (document :path) content)]
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
@@ -132,7 +108,7 @@
         document (get-in state [:documents uri])]
     (if (nil? document)
       [:ok state :null]
-      (let [[diagnostics env] (run-diagnostics uri (document :content))
+      (let [[diagnostics env] (run-diagnostics (document :path) (document :content))
             message {:kind "full"
                      :items diagnostics}]
         (put document :eval-env env)
@@ -140,8 +116,7 @@
         [:ok state message]))))
 
 (defn on-document-formatting [state params]
-  (let [uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         new-content (freeze (fmt/format (string/slice content)))]
     (logging/info (string/format "old content: %m" content) [:formatting])
@@ -163,10 +138,12 @@
         client-uri (get-in params ["textDocument" "uri"])
         uri (document-key client-uri)
         version (get-in params ["textDocument" "version"])
-        [diagnostics env] (run-diagnostics uri content)]
+        filepath (uri/file-uri->path client-uri)
+        [diagnostics env] (run-diagnostics filepath content)]
     (put-in state [:documents uri] @{:content content
                                      :version version
                                      :uri client-uri
+                                     :path filepath
                                      :eval-env env})
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
@@ -198,8 +175,7 @@
           :fiber 6 :nil 6)})))
 
 (defn on-completion [state params]
-  (let [uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
         eval-env (get-in state [:documents uri :eval-env])
         content (get-in state [:documents uri :content])
         location (utils/get-location params)
@@ -233,8 +209,7 @@
     [:ok state message]))
 
 (defn on-document-hover [state params]
-  (let [uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         eval-env (get-in state [:documents uri :eval-env])
         {"line" line "character" character} (get params "position")
@@ -255,8 +230,7 @@
   (logging/info (string/format "%q" state) [:signature])
   (logging/info (string "on-signature-help params: ") [:signature])
   (logging/info (string/format "%q" params) [:signature])
-  (let [uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         eval-env (get-in state [:documents uri :eval-env])
         {"line" line "character" character} (get params "position")
@@ -331,8 +305,7 @@
   Called by the LSP client to request the location of a symbol's definition.
   ``
   [state params]
-  (let [request-uri (first (peg/match uri-percent-encoding-peg
-                                      (get-in params ["textDocument" "uri"])))
+  (let [request-uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents request-uri :content])
         eval-env (get-in state [:documents request-uri :eval-env])
         {"line" line "character" character} (get params "position")
@@ -356,7 +329,7 @@
     (if-let [symbol-lookup (get eval-env (symbol define-word) nil)
              [uri line col] (get symbol-lookup :source-map nil)
              found (os/stat (path/abspath uri))
-             filepath (string "file:" (path/abspath uri))
+             filepath (uri/path->file-uri (path/abspath uri))
              message {:uri filepath
                       :range {:start {:line (max 0 (dec line)) :character col}
                               :end {:line (max 0 (dec line)) :character col}}}]
