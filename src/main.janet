@@ -247,6 +247,7 @@
   ``
   [state params]
   (logging/info (string/format "on-initialize called with these params: %m" params) [:initialize])
+  (put state :lifecycle :initialized)
   (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
     (setdyn :push-diagnostics false)
     (setdyn :push-diagnostics true))
@@ -272,7 +273,7 @@
   Called by the LSP client to request that the server shut down.
   ``
   [state params]
-  (setdyn :shutdown-received true)
+  (put state :lifecycle :shutdown)
   (logging/info "Shutting down" [:shutdown])
   [:ok state :null])
 
@@ -281,11 +282,8 @@
   Called by the LSP client to request that the server process exit.
   ``
   [state params]
-  (unless (dyn :shutdown-received)
-    (ev/sleep 2)
-    (logging/info "Shutting down" [:exit])
-    (quit 1))
-  [:exit])
+  (logging/info "Exiting" [:exit])
+  [:exit (if (= :shutdown (state :lifecycle)) 0 1)])
 
 (defn on-janet-serverinfo
   ``
@@ -426,6 +424,37 @@
 (defn write-rpc-error [id code message &opt data]
   (write-response stdout (rpc/error-response id code message data)))
 
+(defn lifecycle-action [message state]
+  (def lifecycle (state :lifecycle))
+  (def method (get message "method"))
+  (def notification? (rpc/notification? message))
+  (case lifecycle
+    :uninitialized
+    (cond
+      (= method "initialize") (if notification?
+                                [-32600 "Invalid Request" "initialize must be a request"]
+                                nil)
+      (= method "exit") nil
+      notification? :ignore
+      [-32002 "Server not initialized" nil])
+
+    :initialized
+    (cond
+      (= method "initialize") [-32600 "Invalid Request" "initialize may only be sent once"]
+      (= method "initialized") (if notification?
+                                 nil
+                                 [-32600 "Invalid Request" "initialized must be a notification"])
+      (= method "shutdown") (if notification?
+                              :ignore
+                              nil)
+      nil)
+
+    :shutdown
+    (cond
+      (= method "exit") nil
+      notification? :ignore
+      [-32600 "Invalid Request" "server has shut down"])))
+
 (defn dispatch-message [message state]
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
@@ -433,35 +462,42 @@
     (do
       (write-rpc-error id code error-message data)
       state)
-    (match (try (handle-message message state) ([err fib] [:error state err fib]))
-      [:ok new-state response :notify true]
+    (match (lifecycle-action message state)
+      :ignore state
+      [code error-message data]
       (do
-        (write-response stdout (rpc/notification response))
-        new-state)
+        (write-rpc-error id code error-message data)
+        state)
+      nil
+      (match (try (handle-message message state) ([err fib] [:error state err fib]))
+        [:ok new-state response :notify true]
+        (do
+          (write-response stdout (rpc/notification response))
+          new-state)
 
-      [:ok new-state response]
-      (do
-        (unless notification?
-          (write-response stdout (rpc/success-response id response)))
-        new-state)
+        [:ok new-state response]
+        (do
+          (unless notification?
+            (write-response stdout (rpc/success-response id response)))
+          new-state)
 
-      [:noresponse new-state] new-state
+        [:noresponse new-state] new-state
 
-      [:method-not-found new-state]
-      (do
-        (unless notification?
-          (write-rpc-error id -32601 "Method not found"))
-        new-state)
+        [:method-not-found new-state]
+        (do
+          (unless notification?
+            (write-rpc-error id -32601 "Method not found"))
+          new-state)
 
-      [:error new-state err fib]
-      (do
-        (logging/err (string/format "%m" err) [:core])
-        (debug/stacktrace fib err "")
-        (unless notification?
-          (write-rpc-error id -32603 "Internal error"))
-        new-state)
+        [:error new-state err fib]
+        (do
+          (logging/err (string/format "%m" err) [:core])
+          (debug/stacktrace fib err "")
+          (unless notification?
+            (write-rpc-error id -32603 "Internal error"))
+          new-state)
 
-      [:exit] :exit)))
+        [:exit status] [:exit status]))))
 
 (defn message-loop [&named state]
   (logging/info "Loop enter" [:core] 1)
@@ -477,7 +513,7 @@
     (do
       (logging/dbg (string/format "got: %q" message) [:core])
       (match (dispatch-message message state)
-        :exit (do (file/flush stdout) (ev/sleep 0.1) (os/exit 0))
+        [:exit status] (do (file/flush stdout) (os/exit status))
         new-state (message-loop :state new-state)))))
 
 (defn find-all-module-files [path &opt search-jpm-tree explicit results]
@@ -522,7 +558,7 @@
   (when (os/stat "./.janet-lsp/startup.janet")
     (merge-into root-env (dofile "./.janet-lsp/startup.janet")))
 
-  (message-loop :state @{:documents @{}}))
+  (message-loop :state @{:documents @{} :lifecycle :uninitialized}))
 
 (defn start-debug-console []
   (def host "127.0.0.1")

@@ -58,13 +58,16 @@
 (defn notify [cursor method &opt params]
   (write-output cursor {:jsonrpc "2.0" :method method :params (or params {})}))
 
-(defn start-lsp []
+(defn spawn-lsp []
   (def janet-lsp
     (os/spawn [(dyn :executable) "./src/main.janet" "--dont-search-jpm-tree"]
               :p {:in :pipe :out :pipe}))
-  (def cursor @{:process janet-lsp
-                :to-lsp (janet-lsp :in)
-                :from-lsp (janet-lsp :out)})
+  @{:process janet-lsp
+    :to-lsp (janet-lsp :in)
+    :from-lsp (janet-lsp :out)})
+
+(defn start-lsp []
+  (def cursor (spawn-lsp))
   (put cursor :initialize
        (request cursor 0 "initialize"
                 {:rootUri (string "file://" (os/cwd)) :capabilities {}}))
@@ -108,6 +111,35 @@
   (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
+
+(deftest "reject requests before initialization"
+  (def cursor (spawn-lsp))
+  (def response (request cursor 30 "janet/serverInfo"))
+  (test (get-in response [:error :code]) -32002)
+  (test (get-in (request cursor 31 "initialize" {:capabilities {}}) [:id]) 31)
+  (request cursor 32 "shutdown")
+  (notify cursor "exit")
+  (test (os/proc-wait (cursor :process)) 0))
+
+(deftest "exit without shutdown is immediate and unsuccessful"
+  (def cursor (spawn-lsp))
+  (notify cursor "exit")
+  (test (os/proc-wait (cursor :process)) 1))
+
+(deftest: with-process "reject duplicate initialize and initialized requests" [cursor]
+  (test (get-in (request cursor 33 "initialize" {:capabilities {}}) [:error :code])
+        -32600)
+  (test (get-in (request cursor 34 "initialized") [:error :code]) -32600)
+  (notify cursor "initialized")
+  (test (get-in (request cursor 35 "janet/serverInfo") [:id]) 35))
+
+(deftest "reject requests after shutdown"
+  (def cursor (start-lsp))
+  (test (get-in (request cursor 36 "shutdown") [:result]) :null)
+  (test (get-in (request cursor 37 "janet/serverInfo") [:error :code]) -32600)
+  (notify cursor "initialized")
+  (notify cursor "exit")
+  (test (os/proc-wait (cursor :process)) 0))
 
 (deftest: with-process "reads chunked and consecutive frames" [cursor]
   (write-chunked cursor {:jsonrpc "2.0" :id 10 :method "janet/serverInfo" :params {}})
