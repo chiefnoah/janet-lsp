@@ -59,6 +59,9 @@
 (defn notify [cursor method &opt params]
   (write-output cursor {:jsonrpc "2.0" :method method :params (or params {})}))
 
+(defn respond [cursor id result]
+  (write-output cursor {:jsonrpc "2.0" :id id :result result}))
+
 (defn spawn-lsp []
   (def janet-lsp
     (os/spawn [(dyn :executable) "./src/main.janet" "--dont-search-jpm-tree"]
@@ -181,18 +184,26 @@
   (def untrusted (spawn-lsp))
   (request untrusted 50 "initialize"
            {:rootUri root-uri :capabilities {} :initializationOptions {}})
+  (notify untrusted "initialized")
+  (def restricted-prompt (read-output untrusted))
+  (test (get-in restricted-prompt [:method]) "window/showMessageRequest")
+  (test (get-in restricted-prompt [:params :actions 0 :title]) "Trust for This Session")
+  (respond untrusted (get-in restricted-prompt [:id]) {:title "Keep Restricted"})
+  (request untrusted 51 "janet/serverInfo")
   (test (os/stat marker) nil)
-  (request untrusted 51 "shutdown")
+  (request untrusted 52 "shutdown")
   (notify untrusted "exit")
   (os/proc-wait (untrusted :process))
 
   (def trusted (spawn-lsp))
-  (request trusted 52 "initialize"
-           {:rootUri root-uri
-            :capabilities {}
-            :initializationOptions {:trustedWorkspaces [root-uri]}})
+  (request trusted 53 "initialize"
+           {:rootUri root-uri :capabilities {} :initializationOptions {}})
+  (notify trusted "initialized")
+  (def trust-prompt (read-output trusted))
+  (respond trusted (get-in trust-prompt [:id]) {:title "Trust for This Session"})
+  (request trusted 54 "janet/serverInfo")
   (test (os/stat marker :mode) :file)
-  (request trusted 53 "shutdown")
+  (request trusted 55 "shutdown")
   (notify trusted "exit")
   (os/proc-wait (trusted :process))
 
@@ -206,7 +217,12 @@
         -32600)
   (test (get-in (request cursor 34 "initialized") [:error :code]) -32600)
   (notify cursor "initialized")
-  (test (get-in (request cursor 35 "janet/serverInfo") [:id]) 35))
+  (def prompt (read-output cursor))
+  (test (get-in prompt [:id]) "janet-lsp/workspaceTrust")
+  (respond cursor (get-in prompt [:id]) {:title "Keep Restricted"})
+  (def response (request cursor 35 "janet/serverInfo"))
+  (test (get-in response [:error :code]) nil)
+  (test (get-in response [:id]) 35))
 
 (deftest "reject requests after shutdown"
   (def cursor (start-lsp))

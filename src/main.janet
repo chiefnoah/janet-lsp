@@ -314,6 +314,7 @@
   @{:uri root-uri
     :path root-path
     :trusted (not (not trusted))
+    :trust-prompted false
     :env workspace-env
     :unique-paths unique-paths})
 
@@ -350,12 +351,48 @@
     (logging/message message [:initialize])
     [:ok state message]))
 
+(def trust-request-id "janet-lsp/workspaceTrust")
+
+(defn on-initialized [state]
+  (def workspace (state :workspace))
+  (if (or (workspace :trusted)
+          (workspace :trust-prompted)
+          (nil? (workspace :path)))
+    [:noresponse state]
+    (do
+      (put workspace :trust-prompted true)
+      (put-in state [:pending-requests trust-request-id]
+              {:kind :workspace-trust :uri (workspace :uri)})
+      [:request state
+       {:id trust-request-id
+        :method "window/showMessageRequest"
+        :params {:type 2
+                 :message (string "Trust Janet workspace " (workspace :path)
+                                  "? Trusted analysis can execute workspace code.")
+                 :actions [{:title "Trust for This Session"}
+                           {:title "Keep Restricted"}]}}])))
+
+(defn handle-client-response [message state]
+  (def id (get message "id"))
+  (def pending (get-in state [:pending-requests id]))
+  (when pending
+    (put (state :pending-requests) id nil)
+    (when (and (= :workspace-trust (pending :kind))
+               (= "Trust for This Session" (get-in message ["result" "title"])))
+      (def root-uri (pending :uri))
+      (put state :workspace
+           (configure-workspace
+             {"rootUri" root-uri
+              "initializationOptions" {"trustedWorkspaces" [root-uri]}}))))
+  state)
+
 (defn on-shutdown
   ``
   Called by the LSP client to request that the server shut down.
   ``
   [state params]
   (put state :lifecycle :shutdown)
+  (put state :pending-requests @{})
   (logging/info "Shutting down" [:shutdown])
   [:ok state :null])
 
@@ -494,7 +531,7 @@
       [:ok state :null]
       (case method
       "initialize" (on-initialize state params)
-      "initialized" [:noresponse state]
+      "initialized" (on-initialized state)
       "textDocument/didOpen" (on-document-open state params)
       "textDocument/didChange" (on-document-change state params)
       "textDocument/didClose" (on-document-close state params)
@@ -566,6 +603,8 @@
 (defn dispatch-message [message state]
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
+  (if (rpc/response? message)
+    (handle-client-response message state)
   (if-let [[code error-message data] (rpc/validate-message message)]
     (do
       (write-rpc-error id code error-message data)
@@ -589,6 +628,14 @@
             (write-response stdout (rpc/success-response id response)))
           new-state)
 
+        [:request new-state request]
+        (do
+          (write-response stdout
+                          (rpc/request (request :id)
+                                       (request :method)
+                                       (request :params)))
+          new-state)
+
         [:noresponse new-state] new-state
 
         [:method-not-found new-state]
@@ -605,7 +652,7 @@
             (write-rpc-error id -32603 "Internal error"))
           new-state)
 
-        [:exit status] [:exit status]))))
+        [:exit status] [:exit status])))))
 
 (defn message-loop [&named state]
   (logging/info "Loop enter" [:core] 1)
@@ -635,6 +682,7 @@
   (message-loop :state @{:documents @{}
                          :lifecycle :uninitialized
                          :position-encoding "utf-16"
+                         :pending-requests @{}
                          :workspace @{:trusted false
                                       :env root-env
                                       :unique-paths @[]}}))

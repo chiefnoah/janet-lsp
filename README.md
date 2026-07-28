@@ -79,6 +79,14 @@ macros, follows imports, and executes `:flycheck` functions. These operations
 run arbitrary Janet code with the user's permissions, so clients should expose
 this setting only as an explicit user decision.
 
+For an untrusted file workspace, Janet LSP also sends one
+`window/showMessageRequest` after the client's `initialized` notification. The
+user may choose **Trust for This Session** to enable execution-based analysis
+until that language-server process exits, or **Keep Restricted** to continue in
+safe mode. Dismissing the prompt keeps the workspace restricted. Clients can
+use `trustedWorkspaces` for persistent user-approved trust and should not derive
+that list from workspace configuration files.
+
 ## Getting Started (for Development)
 
 ### Clone this project and Build the stand-alone binary and .jimage file

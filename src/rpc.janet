@@ -16,6 +16,9 @@
 (defn notification [message]
   (encode-message (merge {:jsonrpc "2.0"} message)))
 
+(defn request [id method params]
+  (encode-message {:jsonrpc "2.0" :id id :method method :params params}))
+
 (defn valid-id? [id]
   (or (= id :null) (string? id) (number? id)))
 
@@ -28,6 +31,14 @@
 
 (defn notification? [message]
   (and (dictionary? message) (not (has-key? message "id"))))
+
+(defn response? [message]
+  (and (dictionary? message)
+       (= "2.0" (get message "jsonrpc"))
+       (has-key? message "id")
+       (valid-id? (get message "id"))
+       (not (has-key? message "method"))
+       (or (has-key? message "result") (has-key? message "error"))))
 
 (defn validate-message [message]
   (cond
