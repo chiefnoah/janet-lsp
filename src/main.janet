@@ -523,6 +523,7 @@
                                 :documentSymbolProvider true
                                 :workspaceSymbolProvider true
                                 :referencesProvider true
+                                :renameProvider {:prepareProvider true}
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -733,8 +734,9 @@
             (array/push locations {:uri document-uri :range (reference :range)})))
         (each record (values (workspace :index))
           (each reference (record :references)
-            (when (or (= name (reference :name))
-                      (string/has-suffix? (string "/" name) (reference :name)))
+            (def base-name (last (string/split "/" name)))
+            (when (or (= base-name (reference :name))
+                      (string/has-suffix? (string "/" base-name) (reference :name)))
               (array/push locations {:uri (reference :uri) :range (reference :range)})))))
       (when (not include-declaration)
         (def indexed-definition
@@ -765,6 +767,71 @@
                        :range (indexed-range->lsp target-content (found :range)
                                                   (state :position-encoding))})))
       [:ok state (distinct converted)])))
+
+(defn rename-target [state params]
+  (def document-uri (get-in params ["textDocument" "uri"]))
+  (def document (get-in state [:documents document-uri]))
+  (def content (document :content))
+  (def location (request-byte-position state params content))
+  (def word (lookup/word-at location content))
+  (def name (word :word))
+  (def workspace (document-workspace state document))
+  (def local (and (not (empty? name)) (parser/definition-at location content name)))
+  (def indexed (and (not local)
+                    (first (index/definitions workspace (last (string/split "/" name))))))
+  (when (or local indexed)
+    {:name name :uri document-uri :content content
+     :range {:start {:line (location :line) :character (first (word :range))}
+             :end {:line (location :line) :character (last (word :range))}}}))
+
+(defn valid-rename-symbol? [name]
+  (try (let [parsed (parse name)] (and (symbol? parsed) (= name (string parsed))))
+    ([_] false)))
+
+(defn on-prepare-rename [state params]
+  (if-let [target (rename-target state params)]
+    [:ok state {:range (indexed-range->lsp (target :content) (target :range)
+                                           (state :position-encoding))
+                :placeholder (target :name)}]
+    [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"]))
+
+(defn on-rename [state params]
+  (def new-name (get params "newName"))
+  (if (not (valid-rename-symbol? new-name))
+    [:rpc-error state -32602 "Invalid params" "newName must be one Janet symbol"]
+    (if-let [target (rename-target state params)]
+      (match (on-references state
+                            {"textDocument" (get params "textDocument")
+                             "position" (get params "position")
+                             "context" {"includeDeclaration" true}})
+        [:ok _ references]
+        (let [changes @{}]
+          (each reference references
+            (def document-uri (reference :uri))
+            (def document (get-in state [:documents document-uri]))
+            (def filepath (uri/file-uri->path document-uri))
+            (def content (or (and document (document :content))
+                             (and filepath (os/stat filepath) (slurp filepath))))
+            (def range (reference :range))
+            (def line ((string/split "\n" content) (get-in range [:start :line])))
+            (def start-byte (position/units-to-byte line (get-in range [:start :character])
+                                                    (state :position-encoding)))
+            (def end-byte (position/units-to-byte line (get-in range [:end :character])
+                                                  (state :position-encoding)))
+            (def old-name (string/slice line start-byte end-byte))
+            (def slash (string/find "/" old-name))
+            (def replacement (if slash
+                               (string (string/slice old-name 0 (inc slash)) new-name)
+                               new-name))
+            (unless (get changes document-uri) (put changes document-uri @[]))
+            (array/push (get changes document-uri) {:range range :newText replacement}))
+          [:ok state
+           {:documentChanges
+            (seq [[document-uri edits] :pairs changes]
+              {:textDocument {:uri document-uri
+                              :version (get-in state [:documents document-uri :version])}
+               :edits edits})}]))
+      [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"])))
 
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
@@ -828,6 +895,8 @@
    "textDocument/signatureHelp" true
    "textDocument/definition" true
    "textDocument/references" true
+   "textDocument/prepareRename" true
+   "textDocument/rename" true
    "textDocument/documentSymbol" true})
 
 (def position-request-methods
@@ -835,7 +904,9 @@
    "textDocument/hover" true
    "textDocument/signatureHelp" true
    "textDocument/definition" true
-   "textDocument/references" true})
+   "textDocument/references" true
+   "textDocument/prepareRename" true
+   "textDocument/rename" true})
 
 (defn handle-message [message state]
   (let [id (get message "id")
@@ -866,6 +937,8 @@
       "textDocument/documentSymbol" (on-document-symbols state params)
       "workspace/symbol" (on-workspace-symbols state params)
       "textDocument/references" (on-references state params)
+      "textDocument/prepareRename" (on-prepare-rename state params)
+      "textDocument/rename" (on-rename state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)

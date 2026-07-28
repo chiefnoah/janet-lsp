@@ -723,6 +723,45 @@
   (test (length (get-in updated [:result])) 2)
   (exit-lsp cursor))
 
+(deftest "prepare and apply versioned workspace renames"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source "(def value 1)\nvalue\n(let [value 2] value)\nvalue\n")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 7 :text source}})
+  (def prepared
+    (request cursor 113 "textDocument/prepareRename"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 2}}))
+  (test (get-in prepared [:result :placeholder]) "value")
+  (test (get-in prepared [:result :range :start :character]) 0)
+  (test (get-in prepared [:result :range :end :character]) 5)
+  (def renamed
+    (request cursor 114 "textDocument/rename"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 2}
+              :newName "renamed"}))
+  (test (get-in renamed [:result :documentChanges 0 :textDocument :version]) 7)
+  (test (map |(get-in $ [:range :start :line])
+             (get-in renamed [:result :documentChanges 0 :edits]))
+        @[0 1 3])
+  (test (all |(= "renamed" ($ :newText))
+             (get-in renamed [:result :documentChanges 0 :edits]))
+        true)
+  (test (get-in
+          (request cursor 115 "textDocument/rename"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 1 :character 2}
+                    :newName "two symbols"})
+          [:error :code])
+        -32602)
+  (test (get-in
+          (request cursor 116 "textDocument/prepareRename"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 2 :character 1}})
+          [:error :code])
+        -32602)
+  (exit-lsp cursor))
+
 (deftest "track active signature parameters across encodings"
   (each encoding ["utf-16" "utf-8"]
     (def capabilities
