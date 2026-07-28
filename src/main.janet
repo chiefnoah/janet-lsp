@@ -220,33 +220,47 @@
           :core/file 17 :core/peg 6
           :struct 6 :table 6
           :tuple 6 :array 6
-          :fiber 6 :nil 6)})))
+          :fiber 6 :nil 6
+          6)})))
 
 (defn on-completion [state params]
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
         eval-env (get-in state [:documents uri :eval-env])
         content (get-in state [:documents uri :content])
         location (request-byte-position state params content)
+        word (lookup/word-at location content)
+        prefix (string/slice (word :word) 0
+                             (max 0 (- (location :character)
+                                       (first (word :range)))))
         local-bindings (parser/get-syms-at-loc location content)
         bindings (seq [bind :in (all-bindings eval-env)]
                    (binding-to-lsp-item bind eval-env))
         deduped-bindings (utils/concat-dedup-by-label local-bindings bindings)
-        message {:isIncomplete true
-                 :items (map |(merge $ {:data {:uri uri}}) deduped-bindings)}]
+        matching (if (empty? prefix)
+                   deduped-bindings
+                   (filter |(string/has-prefix? prefix (string ($ :label)))
+                           deduped-bindings))
+        limit 2000
+        items (array/slice matching 0 (min limit (length matching)))
+        message {:isIncomplete (> (length matching) limit)
+                 :items (map |(merge $ {:data {:uri uri
+                                               :version (get-in state [:documents uri :version])
+                                               :binding (string ($ :label))}})
+                             items)}]
     (logging/message message [:completion] 1)
     [:ok state message]))
 
 (defn on-completion-item-resolve [state params]
-  (def lbl (get params "label"))
+  (def lbl (or (get-in params ["data" "binding"]) (get params "label")))
   (def document-uri (get-in params ["data" "uri"]))
   (def eval-env (get-in state [:documents document-uri :eval-env]))
 
-  (let [message {:label lbl
-                 :documentation
-                 {:kind "markdown"
-                  :value (doc/my-doc*
-                           (symbol lbl)
-                           (or eval-env (make-env root-env)))}}]
+  (let [message (merge params
+                       {"documentation"
+                        {:kind "markdown"
+                         :value (doc/my-doc*
+                                  (symbol lbl)
+                                  (or eval-env (make-env root-env)))}})]
     (logging/message message [:completion])
     [:ok state message]))
 

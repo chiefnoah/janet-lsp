@@ -614,10 +614,10 @@
   (def response
     (request cursor 4 "textDocument/completion"
              {:textDocument {:uri document-uri}
-              :position {:line 1 :character 4}
+              :position {:line 1 :character 0}
               :context {:triggerKind 1}}))
   (def labels (map |($ :label) (get-in response [:result :items])))
-  (test (get-in response [:result :isIncomplete]) true)
+  (test (get-in response [:result :isIncomplete]) false)
   (test (has-value? labels "string") true)
   (test (has-value? labels "greeting") true))
 
@@ -625,16 +625,59 @@
   (def completion
     (request cursor 5 "textDocument/completion"
              {:textDocument {:uri document-uri}
-              :position {:line 1 :character 4}
+              :position {:line 1 :character 0}
               :context {:triggerKind 1}}))
   (def item (first (filter |(= "string" ($ :label))
                            (get-in completion [:result :items]))))
+  (put item :detail "preserved detail")
+  (put item :sortText "001")
+  (put item :filterText "string")
+  (put item :insertText "string")
   (def response (request cursor 6 "completionItem/resolve" item))
   (test (get-in response [:result :label]) "string")
+  (test (get-in response [:result :kind]) 3)
+  (test (get-in response [:result :detail]) "preserved detail")
+  (test (get-in response [:result :sortText]) "001")
+  (test (get-in response [:result :filterText]) "string")
+  (test (get-in response [:result :insertText]) "string")
+  (test (= (get-in response [:result :data :uri]) document-uri) true)
   (test (get-in response [:result :documentation :kind]) "markdown")
   (test (string/has-prefix? "cfunction"
                             (get-in response [:result :documentation :value]))
         true))
+
+(deftest "resolve same-named completions in their originating documents"
+  (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
+  (def second-uri (uri/path->file-uri
+                    (path/abspath "test/resources/format-file-before.txt")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1
+                          :text "(def shared :doc \"from document A\" 1)\nsha\n"}})
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri second-uri :languageId "janet" :version 1
+                          :text "(def shared :doc \"from document B\" 2)\nsha\n"}})
+  (defn shared-item [id uri]
+    (def completion
+      (request cursor id "textDocument/completion"
+               {:textDocument {:uri uri} :position {:line 1 :character 3}}))
+    (first (filter |(= "shared" ($ :label)) (get-in completion [:result :items]))))
+  (def item-a (shared-item 86 document-uri))
+  (def item-b (shared-item 87 second-uri))
+  (def resolved-a (request cursor 88 "completionItem/resolve" item-a))
+  (def resolved-b (request cursor 89 "completionItem/resolve" item-b))
+  (test (nil? (string/find "from document A"
+                           (get-in resolved-a [:result :documentation :value])))
+        false)
+  (test (nil? (string/find "from document B"
+                           (get-in resolved-b [:result :documentation :value])))
+        false)
+
+  (notify cursor "textDocument/didClose" {:textDocument {:uri document-uri}})
+  (def after-close (request cursor 90 "completionItem/resolve" item-a))
+  (test (string/find "from document A"
+                     (or (get-in after-close [:result :documentation :value]) ""))
+        nil)
+  (exit-lsp cursor))
 
 (deftest "format documents without mutating server state"
   (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
