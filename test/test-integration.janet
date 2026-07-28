@@ -66,11 +66,12 @@
     :to-lsp (janet-lsp :in)
     :from-lsp (janet-lsp :out)})
 
-(defn start-lsp []
+(defn start-lsp [&opt capabilities]
+  (default capabilities {})
   (def cursor (spawn-lsp))
   (put cursor :initialize
        (request cursor 0 "initialize"
-                {:rootUri (string "file://" (os/cwd)) :capabilities {}}))
+                {:rootUri (string "file://" (os/cwd)) :capabilities capabilities}))
   cursor)
 
 (defn exit-lsp [cursor]
@@ -191,12 +192,12 @@
   (write-body cursor "{\"jsonrpc\":\"2.0\",\"id\":1e3,\"method\":\"janet/serverInfo\",\"params\":{}}")
   (test (get-in (read-output cursor) [:id]) 1000))
 
-(deftest: with-process "returns internal errors only for requests" [cursor]
+(deftest: with-process "unknown-document requests return null" [cursor]
   (def params {:textDocument {:uri document-uri}
                :position {:line 0 :character 0}})
-  (def error-response (request cursor 24 "textDocument/hover" params))
-  (test (get-in error-response [:id]) 24)
-  (test (get-in error-response [:error :code]) -32603)
+  (def response (request cursor 24 "textDocument/hover" params))
+  (test (get-in response [:id]) 24)
+  (test (get-in response [:result]) :null)
 
   (notify cursor "textDocument/hover" params)
   (test (get-in (request cursor 25 "janet/serverInfo") [:id]) 25))
@@ -211,7 +212,97 @@
            :contentChanges [{:text document-text}]})
   (def response (read-output cursor))
   (test (= (get-in response [:params :uri]) document-uri) true)
+  (test (get-in response [:params :version]) 2)
   (test (get-in response [:params :diagnostics]) @[]))
+
+(deftest "pull clients use changed document analysis"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri
+                          :languageId "janet"
+                          :version 1
+                          :text document-text}})
+  (def changed-text
+    "(def changed (string \"hello\"))\n(string changed)\nchanged\n")
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text changed-text}]})
+
+  (def completion
+    (request cursor 40 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 2 :character 4}}))
+  (def labels (map |($ :label) (get-in completion [:result :items])))
+  (test (has-value? labels "changed") true)
+  (test (has-value? labels "greeting") false)
+
+  (def hover
+    (request cursor 41 "textDocument/hover"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 3}}))
+  (test (get-in hover [:result :contents :kind]) "markdown")
+
+  (def signature
+    (request cursor 42 "textDocument/signatureHelp"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 8}}))
+  (test (string? (get-in signature [:result :signatures 0 :label])) true)
+
+  (def definition
+    (request cursor 43 "textDocument/definition"
+             {:textDocument {:uri document-uri}
+              :position {:line 2 :character 3}}))
+  (test (string/has-suffix? "test/resources/format-file-after.txt"
+                            (get-in definition [:result :uri]))
+        true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 1}
+           :contentChanges [{:text "(def stale true)\nstale\n"}]})
+  (def after-stale
+    (request cursor 44 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 2 :character 4}}))
+  (def after-stale-labels (map |($ :label) (get-in after-stale [:result :items])))
+  (test (has-value? after-stale-labels "changed") true)
+  (test (has-value? after-stale-labels "stale") false)
+  (exit-lsp cursor))
+
+(deftest "open change and close multiple documents"
+  (def cursor (start-lsp))
+  (def second-uri (string "file://" (path/abspath "test/resources/format-file-before.txt")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text document-text}})
+  (read-output cursor)
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri second-uri :languageId "janet"
+                          :version 4 :text "(def second 1)\nsecond\n"}})
+  (read-output cursor)
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri second-uri :version 5}
+           :contentChanges [{:text "(def second 2)\nsecond\n"}]})
+  (test (get-in (read-output cursor) [:params :version]) 5)
+
+  (notify cursor "textDocument/didClose" {:textDocument {:uri second-uri}})
+  (def cleared (read-output cursor))
+  (test (= (get-in cleared [:params :uri]) second-uri) true)
+  (test (get-in cleared [:params :diagnostics]) @[])
+  (test (get-in
+          (request cursor 45 "textDocument/hover"
+                   {:textDocument {:uri second-uri}
+                    :position {:line 1 :character 2}})
+          [:result])
+        :null)
+
+  (def first-completion
+    (request cursor 46 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 4}}))
+  (test (has-value? (map |($ :label) (get-in first-completion [:result :items]))
+                    "greeting")
+        true)
+  (exit-lsp cursor))
 
 (deftest: with-process-open "hover returns documentation" [cursor]
   (def response

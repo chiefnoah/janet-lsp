@@ -78,6 +78,9 @@
                       :semi :equals :question :at :lbracket
                       :rbracket '1)))})
 
+(defn document-key [uri]
+  (first (peg/match uri-percent-encoding-peg uri)))
+
 (defn on-document-change
   ``
   Handler for the ["textDocument/didChange"](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange) event.
@@ -85,31 +88,56 @@
   Params contains the new state of the document.
   ``
   [state params]
-  (let [content (get-in params ["contentChanges" 0 "text"])
-        uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))]
-    (put-in state [:documents uri :content] content)
+  (let [client-uri (get-in params ["textDocument" "uri"])
+        uri (document-key client-uri)
+        document (get-in state [:documents uri])
+        version (get-in params ["textDocument" "version"])
+        current-version (and document (document :version))]
+    (if (or (nil? document)
+            (and (number? version)
+                 (number? current-version)
+                 (<= version current-version)))
+      [:noresponse state]
+      (let [content (get-in params ["contentChanges" 0 "text"])
+            [diagnostics env] (run-diagnostics uri content)]
+        (put document :content content)
+        (put document :version version)
+        (put document :eval-env env)
+        (if (dyn :push-diagnostics)
+          (let [message {:method "textDocument/publishDiagnostics"
+                         :params {:uri (document :uri)
+                                  :version version
+                                  :diagnostics diagnostics}}]
+            (logging/message message [:diagnostics])
+            [:ok state message :notify true])
+          [:noresponse state])))))
 
-    (if (dyn :push-diagnostics)
-      (let [[diagnostics env] (run-diagnostics uri content)
-            message {:method "textDocument/publishDiagnostics"
-                     :params {:uri uri
-                              :diagnostics diagnostics}}]
-        (put-in state [:documents uri :eval-env] env)
-        (logging/message message [:diagnostics])
-        [:ok state message :notify true])
-      [:noresponse state])))
+(defn on-document-close [state params]
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
+        document (get-in state [:documents uri])]
+    (if (nil? document)
+      [:noresponse state]
+      (do
+        (put (state :documents) uri nil)
+        (if (dyn :push-diagnostics)
+          (let [message {:method "textDocument/publishDiagnostics"
+                         :params {:uri (document :uri)
+                                  :diagnostics @[]}}]
+            (logging/message message [:diagnostics])
+            [:ok state message :notify true])
+          [:noresponse state])))))
 
 (defn on-document-diagnostic [state params]
-  (let [uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
-        content (get-in state [:documents uri :content])
-        [diagnostics env] (run-diagnostics uri content)
-        message {:kind "full"
-                 :items diagnostics}]
-    (put-in state [:documents uri :eval-env] env)
-    (logging/message message [:diagnostics])
-    [:ok state message]))
+  (let [uri (document-key (get-in params ["textDocument" "uri"]))
+        document (get-in state [:documents uri])]
+    (if (nil? document)
+      [:ok state :null]
+      (let [[diagnostics env] (run-diagnostics uri (document :content))
+            message {:kind "full"
+                     :items diagnostics}]
+        (put document :eval-env env)
+        (logging/message message [:diagnostics])
+        [:ok state message]))))
 
 (defn on-document-formatting [state params]
   (let [uri (first (peg/match uri-percent-encoding-peg
@@ -124,7 +152,6 @@
         (logging/info "No changes" [:formatting])
         [:ok state :null])
       (do
-        (put-in state [:documents uri] @{:content new-content})
         (let [message [{:range {:start {:line 0 :character 0}
                                 :end {:line 1000000 :character 1000000}}
                         :newText new-content}]]
@@ -133,17 +160,20 @@
 
 (defn on-document-open [state params]
   (let [content (get-in params ["textDocument" "text"])
-        uri (first (peg/match uri-percent-encoding-peg
-                              (get-in params ["textDocument" "uri"])))
+        client-uri (get-in params ["textDocument" "uri"])
+        uri (document-key client-uri)
+        version (get-in params ["textDocument" "version"])
         [diagnostics env] (run-diagnostics uri content)]
     (put-in state [:documents uri] @{:content content
+                                     :version version
+                                     :uri client-uri
                                      :eval-env env})
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
       (let [message {:method "textDocument/publishDiagnostics"
-                     :params {:uri uri
+                     :params {:uri client-uri
+                              :version version
                               :diagnostics diagnostics}}]
-        (put-in state [:documents uri :eval-env] env)
         (logging/message message [:diagnostics])
         [:ok state message :notify true])
       [:noresponse state])))
@@ -380,16 +410,29 @@
 (defmacro on-set-file-log-level [state params]
   ~(,do-set-log-level ,state ,params :log-to-file-level))
 
+(def open-document-request-methods
+  {"textDocument/completion" true
+   "textDocument/diagnostic" true
+   "textDocument/formatting" true
+   "textDocument/hover" true
+   "textDocument/signatureHelp" true
+   "textDocument/definition" true})
+
 (defn handle-message [message state]
   (let [id (get message "id")
         method (get message "method")
         params (get message "params")]
     (logging/info (string/format "handle-message received method request: `%s`" method) [:core] 0 id)
-    (case method
+    (if (and (get open-document-request-methods method)
+             (nil? (get-in state [:documents
+                                  (document-key (get-in params ["textDocument" "uri"]))])))
+      [:ok state :null]
+      (case method
       "initialize" (on-initialize state params)
       "initialized" [:noresponse state]
       "textDocument/didOpen" (on-document-open state params)
       "textDocument/didChange" (on-document-change state params)
+      "textDocument/didClose" (on-document-close state params)
       "textDocument/completion" (on-completion state params)
       "completionItem/resolve" (on-completion-item-resolve state params)
       "textDocument/diagnostic" (on-document-diagnostic state params)
@@ -410,7 +453,7 @@
       "$/setTrace" (on-set-trace state params)
       (do
         (logging/warn (string/format "Received unrecognized RPC: %m" method) [:handle])
-        [:method-not-found state]))))
+        [:method-not-found state])))))
 
 (defn write-response [file response]
   (transport/write-frame file response))
