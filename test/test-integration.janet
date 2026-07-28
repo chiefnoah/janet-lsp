@@ -1,4 +1,4 @@
-(import ../libs/jayson)
+(import spork/json)
 (import spork/path)
 
 (use judge)
@@ -7,7 +7,11 @@
 (def document-text "(def greeting (string \"hello\"))\ngreeting\n")
 
 (defn message-frame [message]
-  (def body (jayson/encode message))
+  (def body (json/encode message))
+  (string "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
+          "Content-Length: " (length body) "\r\n\r\n" body))
+
+(defn body-frame [body]
   (string "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
           "Content-Length: " (length body) "\r\n\r\n" body))
 
@@ -19,6 +23,9 @@
   (def frame (message-frame message))
   (for i 0 (length frame)
     (ev/write (cursor :to-lsp) (string/slice frame i (inc i)))))
+
+(defn write-body [cursor body]
+  (ev/write (cursor :to-lsp) (body-frame body)))
 
 (defn read-output [cursor]
   (def headers @"")
@@ -42,7 +49,7 @@
     (def chunk (ev/read (cursor :from-lsp) (- content-length (length body))))
     (unless chunk (error "language server returned a truncated response"))
     (buffer/push-string body chunk))
-  (jayson/decode body true))
+  (json/decode body true))
 
 (defn request [cursor id method &opt params]
   (write-output cursor {:jsonrpc "2.0" :id id :method method :params (or params {})})
@@ -111,6 +118,56 @@
                 {:jsonrpc "2.0" :id 12 :method "janet/serverInfo" :params {}})
   (test (get-in (read-output cursor) [:id]) 11)
   (test (get-in (read-output cursor) [:id]) 12))
+
+(deftest: with-process "returns method-not-found only for requests" [cursor]
+  (def error-response (request cursor 20 "unknown/request"))
+  (test (get-in error-response [:id]) 20)
+  (test (get-in error-response [:error :code]) -32601)
+
+  (notify cursor "unknown/notification")
+  (notify cursor "janet/serverInfo")
+  (def next-response (request cursor 21 "janet/serverInfo"))
+  (test (get-in next-response [:id]) 21))
+
+(deftest: with-process "recovers from malformed JSON" [cursor]
+  (write-body cursor "{\"jsonrpc\":\"2.0\", trailing")
+  (def parse-response (read-output cursor))
+  (test (get-in parse-response [:id]) :null)
+  (test (get-in parse-response [:error :code]) -32700)
+  (test (get-in (request cursor 22 "janet/serverInfo") [:id]) 22))
+
+(deftest: with-process "validates request IDs and params" [cursor]
+  (write-output cursor {:jsonrpc "2.0" :id true :method "janet/serverInfo" :params {}})
+  (def invalid-id (read-output cursor))
+  (test (get-in invalid-id [:id]) :null)
+  (test (get-in invalid-id [:error :code]) -32600)
+
+  (write-output cursor {:jsonrpc "2.0" :id 23 :method "janet/serverInfo" :params 1})
+  (def invalid-params (read-output cursor))
+  (test (get-in invalid-params [:id]) 23)
+  (test (get-in invalid-params [:error :code]) -32602)
+
+  (write-output cursor {:jsonrpc "1.0" :method "janet/serverInfo"})
+  (def invalid-envelope (read-output cursor))
+  (test (get-in invalid-envelope [:id]) :null)
+  (test (get-in invalid-envelope [:error :code]) -32600))
+
+(deftest: with-process "preserves null and exponent IDs" [cursor]
+  (write-output cursor {:jsonrpc "2.0" :id :null :method "janet/serverInfo" :params {}})
+  (test (get-in (read-output cursor) [:id]) :null)
+
+  (write-body cursor "{\"jsonrpc\":\"2.0\",\"id\":1e3,\"method\":\"janet/serverInfo\",\"params\":{}}")
+  (test (get-in (read-output cursor) [:id]) 1000))
+
+(deftest: with-process "returns internal errors only for requests" [cursor]
+  (def params {:textDocument {:uri document-uri}
+               :position {:line 0 :character 0}})
+  (def error-response (request cursor 24 "textDocument/hover" params))
+  (test (get-in error-response [:id]) 24)
+  (test (get-in error-response [:error :code]) -32603)
+
+  (notify cursor "textDocument/hover" params)
+  (test (get-in (request cursor 25 "janet/serverInfo") [:id]) 25))
 
 (deftest: with-process-open "document open publishes diagnostics" [cursor]
   (test (= (get-in (cursor :open) [:params :uri]) document-uri) true)

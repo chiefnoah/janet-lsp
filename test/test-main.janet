@@ -2,7 +2,16 @@
 
 (import ../src/main)
 (import ../src/transport)
+(import spork/json)
 (import spork/path)
+
+(deftest "decode strict JSON"
+  (test (json/decode "1e3") 1000)
+  (test (json/decode "null") :null)
+  (test-error (json/decode "Null")
+              "decode error at position 0: unexpected character")
+  (test-error (json/decode "{} trailing")
+              "decode error at position 3: unexpected extra token"))
 
 (deftest "parse LSP headers"
   (test (transport/parse-headers ["Content-Length: 123\r\n"]) 123)

@@ -3,7 +3,6 @@
   :description "A Language Server (LSP) for the Janet Programming Language"
   :version "0.0.12"
   :dependencies ["https://github.com/janet-lang/spork.git"
-                 "https://github.com/CFiggers/jayson.git"
                  {:url "https://github.com/ianthehenry/cmd.git"
                   :tag "v1.1.0"}
                  {:url "https://github.com/ianthehenry/judge.git"

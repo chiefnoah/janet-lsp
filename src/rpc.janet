@@ -1,14 +1,42 @@
-# (import spork/json)
-(import ../libs/jayson)
+(import spork/json)
 (import ./logging)
 
-(defn success-response [id result &keys opts]
-  (def rpc
-    (if (opts :notify)
-      (merge {:jsonrpc "2.0"}
-             result)
-      {:jsonrpc "2.0"
-       :id id
-       :result result}))
-  (logging/info (string/format "sending: %m" rpc) [:rpc])
-  (jayson/encode rpc))
+(defn encode-message [message]
+  (logging/info (string/format "sending: %m" message) [:rpc])
+  (json/encode message))
+
+(defn success-response [id result]
+  (encode-message {:jsonrpc "2.0" :id id :result result}))
+
+(defn error-response [id code message &opt data]
+  (def error-value @{:code code :message message})
+  (when data (put error-value :data data))
+  (encode-message {:jsonrpc "2.0" :id id :error error-value}))
+
+(defn notification [message]
+  (encode-message (merge {:jsonrpc "2.0"} message)))
+
+(defn valid-id? [id]
+  (or (= id :null) (string? id) (number? id)))
+
+(defn message-id [message]
+  (if (and (dictionary? message)
+           (has-key? message "id")
+           (valid-id? (get message "id")))
+    (get message "id")
+    :null))
+
+(defn notification? [message]
+  (and (dictionary? message) (not (has-key? message "id"))))
+
+(defn validate-message [message]
+  (cond
+    (not (dictionary? message)) [-32600 "Invalid Request" "request must be an object"]
+    (not= "2.0" (get message "jsonrpc")) [-32600 "Invalid Request" "jsonrpc must be \"2.0\""]
+    (not (string? (get message "method"))) [-32600 "Invalid Request" "method must be a string"]
+    (and (has-key? message "id")
+         (not (valid-id? (get message "id")))) [-32600 "Invalid Request" "id must be a string, number, or null"]
+    (and (has-key? message "params")
+         (not (or (dictionary? (get message "params"))
+                  (indexed? (get message "params"))))) [-32602 "Invalid params" "params must be an object or array"]
+    nil))

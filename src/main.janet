@@ -1,4 +1,4 @@
-(import ../libs/jayson :prefix "json/")
+(import spork/json)
 (import ../libs/fmt)
 (import ./utils)
 (import ./doc)
@@ -122,7 +122,7 @@
     (if (= content new-content)
       (do
         (logging/info "No changes" [:formatting])
-        [:ok state :json/null])
+        [:ok state :null])
       (do
         (put-in state [:documents uri] @{:content new-content})
         (let [message [{:range {:start {:line 0 :character 0}
@@ -216,7 +216,7 @@
                               :value hover-text}
                    :range {:start {:line line :character start}
                            :end {:line line :character end}}}
-                  :json/null)]
+                  :null)]
     (logging/message message [:hover])
     [:ok state message]))
 
@@ -235,7 +235,7 @@
         signature (or (doc/get-signature (symbol function-symbol) eval-env) "not found")]
     (case signature
       "not found"
-      (do (logging/info "No signature found" [:signature]) [:ok state :json/null])
+      (do (logging/info "No signature found" [:signature]) [:ok state :null])
       (let [message {:signatures [{:label signature}]}]
         (logging/message message [:signature])
         [:ok state message]))))
@@ -274,7 +274,7 @@
   [state params]
   (setdyn :shutdown-received true)
   (logging/info "Shutting down" [:shutdown])
-  [:ok state :json/null])
+  [:ok state :null])
 
 (defn on-exit
   ``
@@ -337,7 +337,7 @@
         [:ok state message])
       (do
         (logging/info "Couldn't find definition" [:definition])
-        [:ok state :json/null]))))
+        [:ok state :null]))))
 
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
@@ -412,7 +412,7 @@
       "$/setTrace" (on-set-trace state params)
       (do
         (logging/warn (string/format "Received unrecognized RPC: %m" method) [:handle])
-        [:noresponse state]))))
+        [:method-not-found state]))))
 
 (defn write-response [file response]
   (transport/write-frame file response))
@@ -420,29 +420,65 @@
 (defn read-message []
   (when-let [input (transport/read-frame stdin)]
     (logging/info (string/format "received json rpc: %s" input) [:rpc :priority])
-    (json/decode input)))
+    (try [:ok (json/decode input)]
+      ([err] [:parse-error err]))))
+
+(defn write-rpc-error [id code message &opt data]
+  (write-response stdout (rpc/error-response id code message data)))
+
+(defn dispatch-message [message state]
+  (def id (rpc/message-id message))
+  (def notification? (rpc/notification? message))
+  (if-let [[code error-message data] (rpc/validate-message message)]
+    (do
+      (write-rpc-error id code error-message data)
+      state)
+    (match (try (handle-message message state) ([err fib] [:error state err fib]))
+      [:ok new-state response :notify true]
+      (do
+        (write-response stdout (rpc/notification response))
+        new-state)
+
+      [:ok new-state response]
+      (do
+        (unless notification?
+          (write-response stdout (rpc/success-response id response)))
+        new-state)
+
+      [:noresponse new-state] new-state
+
+      [:method-not-found new-state]
+      (do
+        (unless notification?
+          (write-rpc-error id -32601 "Method not found"))
+        new-state)
+
+      [:error new-state err fib]
+      (do
+        (logging/err (string/format "%m" err) [:core])
+        (debug/stacktrace fib err "")
+        (unless notification?
+          (write-rpc-error id -32603 "Internal error"))
+        new-state)
+
+      [:exit] :exit)))
 
 (defn message-loop [&named state]
   (logging/info "Loop enter" [:core] 1)
   (logging/dbg (string/format "current state is: %m" state) [:priority])
-  (if-let [message (read-message)]
+  (match (read-message)
+    nil (do (file/flush stdout) (os/exit 0))
+    [:parse-error err]
+    (do
+      (logging/warn (string/format "Invalid JSON: %s" err) [:rpc])
+      (write-rpc-error :null -32700 "Parse error")
+      (message-loop :state state))
+    [:ok message]
     (do
       (logging/dbg (string/format "got: %q" message) [:core])
-      (match (try (handle-message message state) ([err fib] [:error state err fib]))
-        [:ok new-state & response] (do
-                                     (write-response stdout (rpc/success-response (get message "id") ;response))
-                                     (logging/info "successful rpc" [:core] (get message "id"))
-                                     (message-loop :state new-state))
-        [:noresponse new-state] (message-loop :state new-state)
-
-        [:error new-state err fib] (do
-                                     (logging/err (string/format "%m" err) [:core])
-                                     (debug/stacktrace fib err "")
-                                     (message-loop :state new-state))
-        [:exit] (do (file/flush stdout) (ev/sleep 0.1) (os/exit 0))))
-    (do
-      (file/flush stdout)
-      (os/exit 0))))
+      (match (dispatch-message message state)
+        :exit (do (file/flush stdout) (ev/sleep 0.1) (os/exit 0))
+        new-state (message-loop :state new-state)))))
 
 (defn find-all-module-files [path &opt search-jpm-tree explicit results]
   (default explicit true)
