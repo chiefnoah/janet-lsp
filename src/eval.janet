@@ -68,11 +68,31 @@
         # Always safe form
         safe-check (thunk)))))
 
-(defn eval-buffer [str &opt filename]
+(defn safe-buffer [str &opt filename base-env]
+  (default filename "eval.janet")
+  (def parse-state (parser/new))
+  (parser/consume parse-state str)
+  (parser/eof parse-state)
+  (def diagnostics @[])
+  (when (= :error (parser/status parse-state))
+    (array/push diagnostics
+                {:message (string/format "parse error: %s" (parser/error parse-state))
+                 :location (parser/where parse-state)
+                 :severity 1}))
+  [diagnostics (make-env (or base-env root-env))])
+
+(defn eval-buffer [str &opt filename options]
   (logging/info (string/format "`eval-buffer` received filename: `%s`" (or filename "none")) [:evaluation])
   (logging/dbg (string/format "`eval-buffer` received str: `%s`" str) [:evaluation])
 
   (default filename "eval.janet")
+  (default options {})
+  (def trusted (options :trusted))
+  (def base-env (options :base-env))
+  (def unique-paths (options :unique-paths))
+  (if (not trusted)
+    (safe-buffer str filename base-env)
+    (do
   (var state (string str))
   (defn chunks [buf parser]
     (def ret state)
@@ -81,9 +101,9 @@
       (buffer/push-string buf str)
       (buffer/push-string buf "\n")))
 
-  (def fresh-env (make-env root-env))
+  (def fresh-env (make-env (or base-env root-env)))
 
-  (each path (or (dyn :unique-paths) @[])
+  (each path (or unique-paths @[])
     (cond
       (string/has-suffix? ".janet" path) (array/push ((fresh-env 'module/paths) :value) [path :source])
       (string/has-suffix? ".so" path) (array/push ((fresh-env 'module/paths) :value) [path :native])
@@ -115,22 +135,25 @@
          returnval) :e fresh-env))
   (def eval-fiber-return (resume eval-fiber))
   (logging/dbg (string/format "`eval-buffer` is returning: %m" eval-fiber-return) [:evaluation])
-  [eval-fiber-return fresh-env])
+  [eval-fiber-return fresh-env])))
 
 # tests
 
+(defn- trusted-eval-buffer [str &opt filename]
+  (eval-buffer str filename {:trusted true}))
+
 (deftest "test eval-buffer: (+ 2 2)"
-  (test (eval-buffer "(+ 2 2)" "test.janet") [@[] @{:current-file "test.janet"}]))
+  (test (trusted-eval-buffer "(+ 2 2)" "test.janet") [@[] @{:current-file "test.janet"}]))
 
 (deftest "test eval-buffer: (2)"
-  (test (eval-buffer "(2)" "test.janet")
+  (test (trusted-eval-buffer "(2)" "test.janet")
     [@[{:location [1 1]
         :message "compile error: 2 expects 1 argument, got 0"
         :severity 1}]
      @{:current-file "test.janet"}]))
 
 (deftest "test eval-buffer: (+ 2 2"
-  (test (eval-buffer "(+ 2 2" "test.janet")
+  (test (trusted-eval-buffer "(+ 2 2" "test.janet")
     [@[{:location [2 0]
         :message "parse error: unexpected end of source, ( opened at line 1, column 1"
         :severity 1}]
@@ -138,41 +161,41 @@
 
 # check for side effects
 (deftest "test eval-buffer: (pp 42)"
-  (test (eval-buffer "(pp 42)") [@[] @{:current-file "eval.janet"}]) "test.janet")
+  (test (trusted-eval-buffer "(pp 42)") [@[] @{:current-file "eval.janet"}]) "test.janet")
 
 (deftest "test eval-buffer: ()"
-  (test (eval-buffer "()" "test.janet")
+  (test (trusted-eval-buffer "()" "test.janet")
     [@[{:location [1 1]
         :message "runtime error: expected integer key for tuple in range [0, 0), got 0"
         :severity 1}]
      @{:current-file "test.janet"}]))
 
 (deftest "import with no argument should give a parse error"
-  (test (eval-buffer "(import )" "test.janet")
+  (test (trusted-eval-buffer "(import )" "test.janet")
     [@[{:location [1 1]
         :message "compile error: macro arity mismatch, expected at least 1, got 0"
         :severity 1}]
      @{:current-file "test.janet"}]))
 
 (deftest "import with no matching module should give a parse error"
-  (test (eval-buffer "(import randommodulethatdoesntexist)" "test.janet")
+  (test (trusted-eval-buffer "(import randommodulethatdoesntexist)" "test.janet")
     [@[{:location [1 1]
         :message "runtime error: could not find module randommodulethatdoesntexist:\n    /home/deck/.local/share/janet/lib/randommodulethatdoesntexist.jimage\n    /home/deck/.local/share/janet/lib/randommodulethatdoesntexist.janet\n    /home/deck/.local/share/janet/lib/randommodulethatdoesntexist/init.janet\n    /home/deck/.local/share/janet/lib/randommodulethatdoesntexist.so"
         :severity 1}]
      @{:current-file "test.janet"}]))
 
 (deftest "does not error because string/trim is a cfunction"
-  (test (eval-buffer "(string/trim )") [@[] @{:current-file "eval.janet"}]) "test.janet")
+  (test (trusted-eval-buffer "(string/trim )") [@[] @{:current-file "eval.janet"}]) "test.janet")
 
 (deftest "should give a parser error 2"
-  (test (eval-buffer "(freeze )" "test.janet")
+  (test (trusted-eval-buffer "(freeze )" "test.janet")
     [@[{:location [1 1]
         :message "compile error: <function freeze> expects at least 1 argument, got 0"
         :severity 1}]
      @{:current-file "test.janet"}]))
 
 (deftest "multiple compiler errors"
-  (test (eval-buffer "(freeze ) (import )" "test.janet")
+  (test (trusted-eval-buffer "(freeze ) (import )" "test.janet")
     [@[{:location [1 1]
         :message "compile error: <function freeze> expects at least 1 argument, got 0"
         :severity 1}

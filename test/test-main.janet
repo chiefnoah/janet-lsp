@@ -1,6 +1,7 @@
 (use judge)
 
 (import ../src/main)
+(import ../src/eval)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
@@ -98,6 +99,40 @@
   (test (uri/file-uri->path "file:///tmp/a#fragment") nil)
   (test-error (uri/file-uri->path "file:///tmp/%GG")
               "invalid percent escape in URI"))
+
+(deftest "untrusted analysis does not execute workspace code"
+  (def prefix (string "/tmp/janet-lsp-safe-analysis-" (os/getpid)))
+  (def macro-marker (string prefix "-macro"))
+  (def import-marker (string prefix "-import"))
+  (def flycheck-marker (string prefix "-flycheck"))
+  (def imported-file (string prefix "-imported.janet"))
+  (spit imported-file
+        (string "(defn imported-run :flycheck [] (spit "
+                (string/format "%q" import-marker) " \"ran\"))\n"
+                "(imported-run)\n"))
+
+  (def macro-source
+    (string "(defmacro run-macro [] (spit " (string/format "%q" macro-marker) " \"ran\"))\n"
+            "(run-macro)\n"))
+  (def import-source (string "(dofile " (string/format "%q" imported-file) ")\n"))
+  (def flycheck-source
+    (string "(defn run-flycheck :flycheck [] (spit "
+            (string/format "%q" flycheck-marker) " \"ran\"))\n"
+            "(run-flycheck)\n"))
+  (each source [macro-source import-source flycheck-source]
+    (eval/eval-buffer source "safe-test.janet"))
+  (test (os/stat macro-marker) nil)
+  (test (os/stat import-marker) nil)
+  (test (os/stat flycheck-marker) nil)
+
+  (each source [macro-source import-source flycheck-source]
+    (eval/eval-buffer source "trusted-test.janet" {:trusted true}))
+  (test (os/stat macro-marker :mode) :file)
+  (test (os/stat import-marker :mode) :file)
+  (test (os/stat flycheck-marker :mode) :file)
+
+  (each file [macro-marker import-marker flycheck-marker imported-file]
+    (when (os/stat file) (os/rm file))))
 
 (deftest "test binding-to-lsp-item"
   (def eval-env (table/proto-flatten (make-env root-env)))

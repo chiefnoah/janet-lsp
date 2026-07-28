@@ -31,13 +31,16 @@
 (eachk k jpm-defs
   (match (type k) :symbol (put-in jpm-defs [k :source-map] nil) nil))
 
-(defn run-diagnostics [filepath content encoding]
+(defn run-diagnostics [filepath content encoding workspace]
   (let [items @[]
         [diagnostics env]
         (eval/eval-buffer content
                           (if filepath
                             (path/relpath (os/cwd) filepath)
-                            "untitled.janet"))]
+                            "untitled.janet")
+                          {:trusted (workspace :trusted)
+                           :base-env (workspace :env)
+                           :unique-paths (workspace :unique-paths)})]
 
     (logging/dbg (string/format "`eval-buffer` returned: %m" diagnostics) [:evaluation])
 
@@ -82,7 +85,8 @@
       [:noresponse state]
       (let [content (get-in params ["contentChanges" 0 "text"])
             [diagnostics env] (run-diagnostics (document :path) content
-                                               (state :position-encoding))]
+                                               (state :position-encoding)
+                                               (state :workspace))]
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
@@ -116,7 +120,8 @@
     (if (nil? document)
       [:ok state :null]
       (let [[diagnostics env] (run-diagnostics (document :path) (document :content)
-                                               (state :position-encoding))
+                                               (state :position-encoding)
+                                               (state :workspace))
             message {:kind "full"
                      :items diagnostics}]
         (put document :eval-env env)
@@ -148,7 +153,9 @@
         uri (document-key client-uri)
         version (get-in params ["textDocument" "version"])
         filepath (uri/file-uri->path client-uri)
-        [diagnostics env] (run-diagnostics filepath content (state :position-encoding))]
+        [diagnostics env] (run-diagnostics filepath content
+                                           (state :position-encoding)
+                                           (state :workspace))]
     (put-in state [:documents uri] @{:content content
                                      :version version
                                      :uri client-uri
@@ -256,6 +263,60 @@
         (logging/message message [:signature])
         [:ok state message]))))
 
+(defn find-all-module-files [path &opt search-jpm-tree explicit results]
+  (default explicit true)
+  (default results @[])
+  (case (os/stat path :mode)
+    :directory (when (or explicit
+                         search-jpm-tree
+                         (not= (path/basename path) "jpm_tree"))
+                 (each entry (os/dir path)
+                   (find-all-module-files (path/join path entry)
+                                          search-jpm-tree false results)))
+    :file (when (or explicit (not= (path/basename path) "project.janet"))
+            (when (or (string/has-suffix? ".janet" path)
+                      (string/has-suffix? ".jimage" path)
+                      (string/has-suffix? ".so" path))
+              (array/push results path))))
+  results)
+
+(defn find-unique-paths [paths]
+  (->> (seq [found-path :in paths]
+         (if (= (path/basename found-path) "init.janet")
+           [(path/join (path/dirname found-path)
+                       (string ":all:" (path/ext found-path)))
+            (path/join (path/dirname found-path) "init.janet")]
+           [(path/join (path/dirname found-path)
+                       (string ":all:" (path/ext found-path)))]))
+       flatten
+       distinct
+       (map |(path/relpath (os/cwd) $))
+       (map |(string "./" $))))
+
+(defn configure-workspace [params]
+  (def root-uri (get params "rootUri"))
+  (def root-path (uri/file-uri->path root-uri))
+  (def trusted-workspaces
+    (or (get-in params ["initializationOptions" "trustedWorkspaces"])
+        (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
+        @[]))
+  (def trusted (and root-uri root-path (has-value? trusted-workspaces root-uri)))
+  (var workspace-env (make-env root-env))
+  (def unique-paths
+    (if trusted
+      (find-unique-paths
+        (find-all-module-files root-path (not ((dyn :opts) :dont-search-jpm-tree))))
+      @[]))
+  (when trusted
+    (def startup-path (path/join root-path ".janet-lsp" "startup.janet"))
+    (when (os/stat startup-path)
+      (set workspace-env (dofile startup-path :env workspace-env))))
+  @{:uri root-uri
+    :path root-path
+    :trusted (not (not trusted))
+    :env workspace-env
+    :unique-paths unique-paths})
+
 (defn on-initialize
   `` 
   Called by the LSP client to recieve a list of capabilities
@@ -267,6 +328,7 @@
   (def position-encodings (get-in params ["capabilities" "general" "positionEncodings"] @[]))
   (def position-encoding (if (has-value? position-encodings "utf-8") "utf-8" "utf-16"))
   (put state :position-encoding position-encoding)
+  (put state :workspace (configure-workspace params))
   (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
     (setdyn :push-diagnostics false)
     (setdyn :push-diagnostics true))
@@ -562,36 +624,6 @@
         [:exit status] (do (file/flush stdout) (os/exit status))
         new-state (message-loop :state new-state)))))
 
-(defn find-all-module-files [path &opt search-jpm-tree explicit results]
-  (default explicit true)
-  (default results @[])
-  (case (os/stat path :mode)
-    :directory (when (or explicit
-                         search-jpm-tree
-                         (not= (path/basename path) "jpm_tree"))
-                 (each entry (os/dir path)
-                   (find-all-module-files (path/join path entry)
-                                          search-jpm-tree false results)))
-    :file (when (or explicit (not= (path/basename path) "project.janet"))
-            (when (or (string/has-suffix? ".janet" path)
-                      (string/has-suffix? ".jimage" path)
-                      (string/has-suffix? ".so" path))
-              (array/push results path))))
-  results)
-
-(defn find-unique-paths [paths]
-  (->> (seq [found-path :in paths]
-         (if (= (path/basename found-path) "init.janet")
-           [(path/join (path/dirname found-path)
-                       (string ":all:" (path/ext found-path)))
-            (path/join (path/dirname found-path) "init.janet")]
-           [(path/join (path/dirname found-path)
-                       (string ":all:" (path/ext found-path)))]))
-       flatten
-       distinct
-       (map |(path/relpath (os/cwd) $))
-       (map |(string "./" $))))
-
 (defn start-language-server []
   (logging/info (string "Starting LSP " version "-" commit) [:core])
   (when (dyn :debug)
@@ -599,14 +631,13 @@
       ([_] (logging/err "Tried to write to janetlsp.log txt, but couldn't" [:core]))))
 
   (merge-module root-env jpm-defs nil true)
-  (setdyn :unique-paths (find-unique-paths (find-all-module-files (os/cwd) (not ((dyn :opts) :dont-search-jpm-tree)))))
-
-  (when (os/stat "./.janet-lsp/startup.janet")
-    (merge-into root-env (dofile "./.janet-lsp/startup.janet")))
 
   (message-loop :state @{:documents @{}
                          :lifecycle :uninitialized
-                         :position-encoding "utf-16"}))
+                         :position-encoding "utf-16"
+                         :workspace @{:trusted false
+                                      :env root-env
+                                      :unique-paths @[]}}))
 
 (defn start-debug-console []
   (def host "127.0.0.1")

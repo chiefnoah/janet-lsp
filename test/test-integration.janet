@@ -4,6 +4,7 @@
 (use judge)
 
 (def document-uri (string "file://" (path/abspath "test/resources/format-file-after.txt")))
+(def workspace-uri (string "file://" (os/cwd)))
 (def document-text "(def greeting (string \"hello\"))\ngreeting\n")
 
 (defn message-frame [message]
@@ -66,13 +67,18 @@
     :to-lsp (janet-lsp :in)
     :from-lsp (janet-lsp :out)})
 
-(defn start-lsp [&opt capabilities]
+(defn start-lsp [&opt capabilities initialization-options]
   (default capabilities {})
   (def cursor (spawn-lsp))
   (put cursor :initialize
        (request cursor 0 "initialize"
-                {:rootUri (string "file://" (os/cwd)) :capabilities capabilities}))
+                {:rootUri workspace-uri
+                 :capabilities capabilities
+                 :initializationOptions (or initialization-options {})}))
   cursor)
+
+(defn start-trusted-lsp [&opt capabilities]
+  (start-lsp capabilities {:trustedWorkspaces [workspace-uri]}))
 
 (defn exit-lsp [cursor]
   (request cursor 99 "shutdown")
@@ -162,6 +168,39 @@
   (notify cursor "exit")
   (test (os/proc-wait (cursor :process)) 1))
 
+(deftest "workspace startup requires explicit client trust"
+  (def workspace (string "/tmp/janet-lsp-trust-" (os/getpid)))
+  (def config-dir (path/join workspace ".janet-lsp"))
+  (def startup (path/join config-dir "startup.janet"))
+  (def marker (path/join workspace "startup-ran"))
+  (def root-uri (string "file://" workspace))
+  (os/mkdir workspace)
+  (os/mkdir config-dir)
+  (spit startup (string "(spit " (string/format "%q" marker) " \"ran\")\n{}\n"))
+
+  (def untrusted (spawn-lsp))
+  (request untrusted 50 "initialize"
+           {:rootUri root-uri :capabilities {} :initializationOptions {}})
+  (test (os/stat marker) nil)
+  (request untrusted 51 "shutdown")
+  (notify untrusted "exit")
+  (os/proc-wait (untrusted :process))
+
+  (def trusted (spawn-lsp))
+  (request trusted 52 "initialize"
+           {:rootUri root-uri
+            :capabilities {}
+            :initializationOptions {:trustedWorkspaces [root-uri]}})
+  (test (os/stat marker :mode) :file)
+  (request trusted 53 "shutdown")
+  (notify trusted "exit")
+  (os/proc-wait (trusted :process))
+
+  (os/rm marker)
+  (os/rm startup)
+  (os/rmdir config-dir)
+  (os/rmdir workspace))
+
 (deftest: with-process "reject duplicate initialize and initialized requests" [cursor]
   (test (get-in (request cursor 33 "initialize" {:capabilities {}}) [:error :code])
         -32600)
@@ -241,7 +280,8 @@
   (test (= (get-in (cursor :open) [:params :uri]) document-uri) true)
   (test (get-in (cursor :open) [:params :diagnostics]) @[]))
 
-(deftest: with-process "preserve encoded client document URIs" [cursor]
+(deftest "preserve encoded client document URIs"
+  (def cursor (start-trusted-lsp))
   (def encoded-uri
     (string/replace "format-file-after.txt" "%66ormat-file-after.txt" document-uri))
   (notify cursor "textDocument/didOpen"
@@ -254,7 +294,8 @@
               :position {:line 0 :character 6}}))
   (test (= (get-in definition [:result :uri]) document-uri) true)
   (notify cursor "textDocument/didClose" {:textDocument {:uri encoded-uri}})
-  (test (= (get-in (read-output cursor) [:params :uri]) encoded-uri) true))
+  (test (= (get-in (read-output cursor) [:params :uri]) encoded-uri) true)
+  (exit-lsp cursor))
 
 (deftest: with-process "non-file documents avoid filesystem operations" [cursor]
   (def untitled-uri "untitled:janet-lsp-buffer")
@@ -278,7 +319,7 @@
   (test (get-in response [:params :diagnostics]) @[]))
 
 (deftest "pull clients use changed document analysis"
-  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri document-uri
                           :languageId "janet"

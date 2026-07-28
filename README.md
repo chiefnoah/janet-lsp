@@ -52,6 +52,33 @@ Other editors that implement LSP client protocols, either built-in or through ed
 
 If you get Janet LSP working with any of these options, please let me know!
 
+### Workspace Trust
+
+Janet LSP treats every workspace as untrusted by default. Untrusted analysis
+parses source for syntax and local symbols, but does not compile or execute
+workspace macros, imports, functions marked `:flycheck`, or
+`.janet-lsp/startup.janet`. This prevents opening a repository from executing
+code on the editor user's machine.
+
+Clients may explicitly opt a workspace into execution-based analysis by
+including its exact root URI in `initializationOptions.trustedWorkspaces`:
+
+```json
+{
+  "rootUri": "file:///home/user/project",
+  "initializationOptions": {
+    "trustedWorkspaces": ["file:///home/user/project"]
+  }
+}
+```
+
+Trust applies only to the listed workspace URI and can be granted only through
+client initialization options; repository files cannot enable it. Trusted mode
+loads `.janet-lsp/startup.janet`, discovers workspace module paths, expands
+macros, follows imports, and executes `:flycheck` functions. These operations
+run arbitrary Janet code with the user's permissions, so clients should expose
+this setting only as an explicit user decision.
+
 ## Getting Started (for Development)
 
 ### Clone this project and Build the stand-alone binary and .jimage file
