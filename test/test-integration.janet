@@ -836,6 +836,32 @@
                             (get-in published [:params :diagnostics 0 :message]))
         true))
 
+(deftest: with-process "offer only current deterministic diagnostic fixes" [cursor]
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text "("}})
+  (def published (read-output cursor))
+  (def diagnostic (get-in published [:params :diagnostics 0]))
+  (test (get diagnostic :code) "janet.parse.unclosed-delimiter")
+  (def params {:textDocument {:uri document-uri}
+               :range {:start {:line 0 :character 0} :end {:line 0 :character 1}}
+               :context {:diagnostics [diagnostic] :only ["quickfix"]}})
+  (def actions (request cursor 118 "textDocument/codeAction" params))
+  (test (get-in actions [:result 0 :kind]) "quickfix")
+  (test (get-in actions [:result 0 :edit :documentChanges 0 :textDocument :version]) 1)
+  (test (get-in actions [:result 0 :edit :documentChanges 0 :edits 0 :newText]) ")")
+  (def filtered
+    (request cursor 119 "textDocument/codeAction"
+             {:textDocument {:uri document-uri}
+              :range (get params :range)
+              :context {:diagnostics [diagnostic] :only ["source"]}}))
+  (test (get-in filtered [:result]) @[])
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text "("}]})
+  (read-output cursor)
+  (test (get-in (request cursor 120 "textDocument/codeAction" params) [:result]) @[]))
+
 (deftest "pull diagnostics survive compile and bounded runtime failures"
   (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
   (notify cursor "textDocument/didOpen"

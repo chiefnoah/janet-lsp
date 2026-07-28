@@ -64,9 +64,19 @@
                      content {:line (max 0 (dec line))
                               :character (max 0 (dec col))} encoding)]
           (array/push items
-                      {:range {:start lsp-position :end lsp-position}
+                      @{:range {:start lsp-position :end lsp-position}
                        :message message
-                       :severity severity}))))
+                       :severity severity
+                       :source "janet-lsp"
+                       :code (cond
+                               (string/has-prefix? "parse error:" message)
+                               (if (string/find "unexpected end of source" message)
+                                 "janet.parse.unclosed-delimiter" "janet.parse")
+                               (string/has-prefix? "compile warning:" message) "janet.compile.warning"
+                               (string/has-prefix? "compile error:" message) "janet.compile"
+                               (string/has-prefix? "runtime error:" message) "janet.runtime"
+                               "janet.analysis")
+                       :data @{:contentHash (hash content)}}))))
 
     (logging/info (string/format "`run-diagnostics` is returning these errors: %m" items) [:evaluation])
     (logging/dbg (string/format "`run-diagnostics` is returning this eval-context: %m" env) [:evaluation])
@@ -121,6 +131,7 @@
             [diagnostics env] (run-diagnostics (document :path) content
                                                (state :position-encoding)
                                                workspace)]
+        (each diagnostic diagnostics (put-in diagnostic [:data :version] version))
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
@@ -160,6 +171,8 @@
                                                workspace)
             message {:kind "full"
                      :items diagnostics}]
+        (each diagnostic diagnostics
+          (put-in diagnostic [:data :version] (document :version)))
         (put document :eval-env env)
         (logging/message message [:diagnostics])
         [:ok state message]))))
@@ -203,6 +216,7 @@
         [diagnostics env] (run-diagnostics filepath content
                                            (state :position-encoding)
                                            workspace)]
+    (each diagnostic diagnostics (put-in diagnostic [:data :version] version))
     (put-in state [:documents uri] @{:content content
                                      :version version
                                      :uri client-uri
@@ -532,6 +546,7 @@
                                 {:legend {:tokenTypes semantic-token-types
                                           :tokenModifiers semantic-token-modifiers}
                                  :full true}
+                                :codeActionProvider {:codeActionKinds ["quickfix"]}
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -895,6 +910,45 @@
       (set previous-character (start :character))))
   [:ok state {:data data}])
 
+(defn missing-delimiters [source]
+  (def stack @[])
+  (each byte (string/bytes (lookup/structure-mask source))
+    (case byte
+      40 (array/push stack 41)
+      91 (array/push stack 93)
+      123 (array/push stack 125)
+      41 (if (and (not (empty? stack)) (= 41 (last stack))) (array/pop stack) (array/push stack nil))
+      93 (if (and (not (empty? stack)) (= 93 (last stack))) (array/pop stack) (array/push stack nil))
+      125 (if (and (not (empty? stack)) (= 125 (last stack))) (array/pop stack) (array/push stack nil))))
+  (when (not (has-value? stack nil))
+    (string/from-bytes ;(reverse stack))))
+
+(defn on-code-action [state params]
+  (def document-uri (get-in params ["textDocument" "uri"]))
+  (def document (get-in state [:documents document-uri]))
+  (def only (get-in params ["context" "only"] @[]))
+  (def supports? (or (empty? only) (has-value? only "quickfix")))
+  (def actions @[])
+  (when supports?
+    (each diagnostic (get-in params ["context" "diagnostics"] @[])
+      (when (and (= "janet.parse.unclosed-delimiter" (get diagnostic "code"))
+                 (= (hash (document :content)) (get-in diagnostic ["data" "contentHash"]))
+                 (= (document :version) (get-in diagnostic ["data" "version"])))
+        (when-let [closing (missing-delimiters (document :content))]
+          (when (not (empty? closing))
+            (def end (position/document-end (document :content) (state :position-encoding)))
+            (array/push actions
+                        {:title (string "Insert missing " closing)
+                         :kind "quickfix"
+                         :diagnostics [diagnostic]
+                         :isPreferred true
+                         :edit {:documentChanges
+                                [{:textDocument {:uri document-uri
+                                                 :version (document :version)}
+                                  :edits [{:range {:start end :end end}
+                                           :newText closing}]}]}}))))))
+  [:ok state actions])
+
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
@@ -960,6 +1014,7 @@
    "textDocument/prepareRename" true
    "textDocument/rename" true
    "textDocument/semanticTokens/full" true
+   "textDocument/codeAction" true
    "textDocument/documentSymbol" true})
 
 (def position-request-methods
@@ -1003,6 +1058,7 @@
       "textDocument/prepareRename" (on-prepare-rename state params)
       "textDocument/rename" (on-rename state params)
       "textDocument/semanticTokens/full" (on-semantic-tokens-full state params)
+      "textDocument/codeAction" (on-code-action state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)
