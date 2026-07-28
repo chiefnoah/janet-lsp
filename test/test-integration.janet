@@ -131,6 +131,41 @@
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
 
+(deftest: with-process "validate logging and trace controls" [cursor]
+  (test (get-in (request cursor 93 "setLogLevel" {:level "verbose"})
+                [:result :message])
+        "Set log-level to verbose")
+  (test (get-in (request cursor 94 "setLogLevel" {:level "loud"})
+                [:error :code])
+        -32602)
+  (test (get-in (request cursor 95 "setLogToFileLevel" {}) [:error :code]) -32602)
+  (notify cursor "$/setTrace" {:value "verbose"})
+  (test (get-in (request cursor 96 "janet/serverInfo") [:result :trace]) "verbose")
+  (notify cursor "$/setTrace" {:value "invalid"})
+  (test (get-in (request cursor 97 "janet/serverInfo") [:result :trace]) "verbose"))
+
+(deftest "nondefault debug ports preserve stdio framing"
+  (def port (+ 18000 (% (os/getpid) 1000)))
+  (def port-arg (string "--debug-port=" port))
+  (def console
+    (os/spawn [(dyn :executable) "./src/main.janet" "--console" port-arg]
+              :p {:out :pipe}))
+  (ev/sleep 0.2)
+  (def process
+    (os/spawn [(dyn :executable) "./src/main.janet" "--debug" port-arg
+               "--dont-search-jpm-tree"]
+              :p {:in :pipe :out :pipe}))
+  (def cursor @{:process process :to-lsp (process :in) :from-lsp (process :out)})
+  (test (get-in
+          (request cursor 98 "initialize"
+                   {:rootUri workspace-uri :capabilities {}})
+          [:result :serverInfo :name])
+        "janet-lsp")
+  (request cursor 99 "shutdown")
+  (notify cursor "exit")
+  (os/proc-wait process)
+  (os/proc-kill console true))
+
 (deftest: with-process "convert default UTF-16 feature positions" [cursor]
   (def unicode-text "(do \"😀\" string)\n")
   (notify cursor "textDocument/didOpen"

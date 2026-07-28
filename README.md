@@ -6,27 +6,30 @@ A Language Server (LSP) for the [Janet](https://janet-lang.org) programming lang
 
 The goal of this project is to provide an augmented editor/tooling experience for [Janet](https://janet-lang.org), via a self-contained, [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)-compliant language server (which is itself implemented in Janet!).
 
-Current features include:
+### Stable Features
 
-- [x] Auto-completion based on symbols in the Janet Standard Library and defined in user code
-- [x] On-hover definition of symbols as returned by `(doc ,symbol)`
-- [x] Inline compiler errors
-- [x] Pop-up signature help 
+- Full open/change/close document synchronization with UTF-16 and UTF-8 positions
+- Core and lexical completion with document-aware completion resolution
+- Hover documentation and active-parameter signature help
+- Push and pull parse, compile, warning, and bounded runtime diagnostics
+- Whole-document formatting
+- Local and runtime source-map definition lookup
+- Single-root, multi-root, and standalone-file analysis
 
-Planned features include:
+### Experimental Features
 
-- [ ] Jump to definition/implementation
-- [ ] Find references from definition/implementation
-- [ ] Refactoring helps
-- [ ] Symbol renaming helps
+- Trust-gated execution-based workspace analysis, including startup files,
+  imports, macros, and `:flycheck` functions
+- The network debug console and runtime logging controls
+- Definition lookup outside the current document, which depends on available
+  Janet source maps and module metadata
 
-Possible (but de-prioritized) features include:
+### Planned Features
 
-- [ ] Syntax highlighting for Janet via semantic tokens
-
-Desirable, but possibly more complicated/difficult features include:
-
-- [ ] Stand-alone (i.e. non-Editor-dependent) usage via API/CLI
+- Document and workspace symbols
+- Complete imported-symbol definition lookup
+- Find references and workspace rename
+- Semantic tokens, diagnostic code actions, and inlay hints
 
 ## Caveats
 

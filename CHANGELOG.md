@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file.
 Format for entires is <version-string> - release date.
 
+## Unreleased
+
+- Protocol transport, JSON-RPC lifecycle, cancellation, URI, and position
+  encoding compliance have been hardened.
+- Document state, workspace folders, completion resolution, formatting,
+  signature help, and diagnostics now have integration coverage.
+- Workspace execution is restricted by default. Startup files, macros,
+  imports, and `:flycheck` functions run only for explicitly trusted roots.
+- Added one-session workspace trust prompts and persistent client-managed
+  `trustedWorkspaces` initialization options.
+
 ## 0.0.11 - 2026-02-14
 
 - Logging 

@@ -506,7 +506,8 @@
   [state params]
   (let [message {:serverInfo {:name "janet-lsp"
                               :version version
-                              :commit commit}}]
+                              :commit commit}
+                 :trace (state :trace)}]
     (logging/message message [:info])
     [:ok state message]))
 
@@ -558,10 +559,12 @@
 
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
-  (case (params "value")
-    "off" nil
-    "messages" nil
-    "verbose" nil)
+  (case (get params "value")
+    "off" (put state :trace "off")
+    "messages" (put state :trace "messages")
+    "verbose" (put state :trace "verbose")
+    (logging/warn (string/format "Ignoring invalid trace value: %m" (get params "value"))
+                  [:settrace]))
   [:noresponse state])
 
 (defn on-cancel-request [state params]
@@ -592,12 +595,15 @@
     [:ok state message]))
 
 (defn do-set-log-level [state params kind]
-  (let [new-level-string (params "level")
-        new-level ({"off" 0 "messages" 1 "verbose" 2 "veryverbose" 3} new-level-string)
-        message {:message (string/format "Set %s to %s" kind new-level-string)}]
-    (logging/message message [:loglevel])
-    (setdyn kind new-level)
-    [:noresponse state]))
+  (let [new-level-string (get params "level")
+        new-level ({"off" 0 "messages" 1 "verbose" 2 "veryverbose" 3} new-level-string)]
+    (if (nil? new-level)
+      [:rpc-error state -32602 "Invalid params"
+       "level must be off, messages, verbose, or veryverbose"]
+      (let [message {:message (string/format "Set %s to %s" kind new-level-string)}]
+        (logging/message message [:loglevel])
+        (setdyn kind new-level)
+        [:ok state message]))))
 
 (defmacro on-set-log-level [state params]
   ~(,do-set-log-level ,state ,params :log-level))
@@ -753,6 +759,12 @@
                                          (request :params))))
           new-state)
 
+        [:rpc-error new-state code error-message data]
+        (do
+          (unless notification?
+            (write-rpc-error id code error-message data))
+          new-state)
+
         [:noresponse new-state] new-state
 
         [:method-not-found new-state]
@@ -799,6 +811,7 @@
   (message-loop :state @{:documents @{}
                          :lifecycle :uninitialized
                          :position-encoding "utf-16"
+                         :trace "off"
                          :pending-requests @{}
                          :cancelled-requests @{}
                          :trusted-workspaces @[]
@@ -811,7 +824,7 @@
 
 (defn start-debug-console []
   (def host "127.0.0.1")
-  (def port (if ((dyn :opts) :port) (string ((dyn :opts) :port)) "8037"))
+  (def port (logging/debug-port (dyn :opts)))
 
   (print "Janet LSP Debug Console v" version "-" commit)
   (print (string/format "Listening on %s:%s" host port))

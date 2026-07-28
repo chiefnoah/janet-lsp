@@ -2,6 +2,9 @@
 
 (import spork/rpc)
 
+(defn debug-port [opts]
+  (string (or (and opts (opts :debug-port)) 8037)))
+
 (defn log [output categories &opt level]
   (unless (dyn :debug) (break))
 
@@ -9,12 +12,12 @@
     (def opts (dyn :opts))
 
     (def host "127.0.0.1")
-    (def port (if (and opts (opts :port)) (string (opts :port)) "8037"))
+    (def port (debug-port opts))
 
     (setdyn :client (try (rpc/client host port) ([_] "No debug console detected"))))
 
   (when (not= (dyn :client) "No debug console detected")
-    (print (:print (dyn :client) output)))
+    (:print (dyn :client) output))
 
   (when (dyn :debug)
 

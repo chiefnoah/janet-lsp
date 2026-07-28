@@ -2,6 +2,7 @@
 
 (import ../src/main)
 (import ../src/eval)
+(import ../src/logging)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
@@ -15,6 +16,10 @@
               "decode error at position 0: unexpected character")
   (test-error (json/decode "{} trailing")
               "decode error at position 3: unexpected extra token"))
+
+(deftest "select configured debug ports"
+  (test (logging/debug-port nil) "8037")
+  (test (logging/debug-port {:debug-port 9123}) "9123"))
 
 (deftest "convert negotiated position encodings"
   (def line "aé☃😀é")
