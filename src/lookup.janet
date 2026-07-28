@@ -1,6 +1,8 @@
 (use judge)
 (import ./logging)
 
+(varfn to-index [])
+
 (defn lookup [{:line line :character character} source]
   (string/from-bytes (((string/split "\n" source) line) character)))
 
@@ -30,6 +32,71 @@
         (= byte 34) (do (buffer/push-byte masked 32) (set state :string))
         (buffer/push-byte masked byte))))
   (string masked))
+
+(defn structure-mask [source]
+  "Mask comments and string contents, retaining one placeholder per string form."
+  (def bytes (string/bytes source))
+  (def masked @"")
+  (var state :code)
+  (var escaped false)
+  (each byte bytes
+    (case state
+      :comment
+      (if (= byte 10)
+        (do (buffer/push-byte masked byte) (set state :code))
+        (buffer/push-byte masked 32))
+      :string
+      (cond
+        (= byte 10) (buffer/push-byte masked byte)
+        escaped (do (buffer/push-byte masked 32) (set escaped false))
+        (= byte 92) (do (buffer/push-byte masked 32) (set escaped true))
+        (= byte 34) (do (buffer/push-byte masked 32) (set state :code))
+        (buffer/push-byte masked 32))
+      (cond
+        (= byte 35) (do (buffer/push-byte masked 32) (set state :comment))
+        (= byte 34) (do (buffer/push-byte masked 120) (set state :string))
+        (buffer/push-byte masked byte))))
+  (string masked))
+
+(defn call-context [location source]
+  (def cursor (to-index location source))
+  (def masked (structure-mask source))
+  (def bytes (string/bytes masked))
+  (def stack @[])
+  (for i 0 (min cursor (length bytes))
+    (case (bytes i)
+      40 (array/push stack [40 i])
+      91 (array/push stack [91 i])
+      123 (array/push stack [123 i])
+      41 (when (and (not (empty? stack)) (= 40 ((last stack) 0))) (array/pop stack))
+      93 (when (and (not (empty? stack)) (= 91 ((last stack) 0))) (array/pop stack))
+      125 (when (and (not (empty? stack)) (= 123 ((last stack) 0))) (array/pop stack))))
+  (def call (last (filter |(= 40 ($ 0)) stack)))
+  (when call
+    (def start (inc (call 1)))
+    (var depth 0)
+    (var in-token false)
+    (var forms 0)
+    (var callee-start nil)
+    (var callee-end nil)
+    (for i start (min cursor (length bytes))
+      (def byte (bytes i))
+      (def whitespace? (has-value? [9 10 11 12 13 32] byte))
+      (when (and (= depth 0) (not whitespace?) (not in-token))
+        (set in-token true)
+        (+= forms 1)
+        (when (= forms 1) (set callee-start i)))
+      (when (and (= depth 0) whitespace? in-token)
+        (set in-token false)
+        (when (and (= forms 1) (nil? callee-end)) (set callee-end i)))
+      (cond
+        (has-value? [40 91 123] byte) (+= depth 1)
+        (has-value? [41 93 125] byte) (when (> depth 0) (-= depth 1))))
+    (when (and callee-start (nil? callee-end)) (set callee-end cursor))
+    (when (and callee-start callee-end)
+      {:callee (string/trim (string/slice masked callee-start callee-end))
+       :active-parameter (max 0 (- forms 2))
+       :range [start cursor]})))
 
 (def word-peg
   (peg/compile
@@ -78,7 +145,7 @@
       {:source (string/slice source ;sexp-range) :range sexp-range}
       {:source "" :range @[line-pos character-pos]})))
 
-(defn to-index [location source]
+(varfn to-index [location source]
   (let [{:character character-pos :line line-pos} location
         lines (string/split "\n" source)
         pre-lines (array/slice lines 0 line-pos)

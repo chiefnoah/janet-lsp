@@ -548,6 +548,35 @@
         "markdown")
   (exit-lsp cursor))
 
+(deftest "track active signature parameters across encodings"
+  (each encoding ["utf-16" "utf-8"]
+    (def capabilities
+      (if (= encoding "utf-8")
+        {:general {:positionEncodings ["utf-8"]}
+         :textDocument {:diagnostic {}}}
+        {:textDocument {:diagnostic {}}}))
+    (def cursor (start-lsp capabilities))
+    (def source "(string \"😀\"\n  \"b\")")
+    (notify cursor "textDocument/didOpen"
+            {:textDocument {:uri document-uri :languageId "janet"
+                            :version 1 :text source}})
+    (def response
+      (request cursor 91 "textDocument/signatureHelp"
+               {:textDocument {:uri document-uri}
+                :position {:line 1 :character 5}}))
+    (test (get-in response [:result :activeSignature]) 0)
+    (test (get-in response [:result :activeParameter]) 1)
+    (test (get-in response [:result :signatures 0 :parameters 0 :label]) "&")
+    (test (get-in response [:result :signatures 0 :parameters 1 :label]) "xs")
+    (test (string? (get-in response [:result :signatures 0 :documentation :value])) true)
+    (test (get-in
+            (request cursor 92 "textDocument/signatureHelp"
+                     {:textDocument {:uri document-uri}
+                      :position {:line 0 :character 0}})
+            [:result])
+          :null)
+    (exit-lsp cursor)))
+
 (deftest: with-process-open "pull diagnostics returns a full report" [cursor]
   (def response
     (request cursor 3 "textDocument/diagnostic"

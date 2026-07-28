@@ -99,10 +99,9 @@
   [sym env]
   (assert (not (nil? env)) "get-signature: env is nil")
   (logging/info (string/format "get-signature tried %m" (env sym)) [:hover])
-  (if-let [x (env sym)]
-    (-> (string/split "\n" (x :doc))
-        (array/slice nil 1)
-        (first))
+  (if-let [x (env sym)
+           documentation (x :doc)]
+    (first (string/split "\n" documentation))
     # (as-> (string/split "\n" (x :doc)) s
     #     (array/slice s nil 1)
     #     (first s)

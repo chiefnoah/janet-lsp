@@ -285,21 +285,27 @@
     [:ok state message]))
 
 (defn on-document-signature-help [state params]
-  (logging/info (string "on-signature-help state: ") [:signature])
-  (logging/info (string/format "%q" state) [:signature])
-  (logging/info (string "on-signature-help params: ") [:signature])
-  (logging/info (string/format "%q" params) [:signature])
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
         content (get-in state [:documents uri :content])
         eval-env (get-in state [:documents uri :eval-env])
-        {:line line :character character} (request-byte-position state params content)
-        {:source sexp-text :range [start end]} (lookup/sexp-at {:line line :character character} content)
-        function-symbol (or (first (peg/match '(* "(" (any :s) (<- (to " "))) sexp-text)) "none")
-        signature (or (doc/get-signature (symbol function-symbol) eval-env) "not found")]
-    (case signature
-      "not found"
-      (do (logging/info "No signature found" [:signature]) [:ok state :null])
-      (let [message {:signatures [{:label signature}]}]
+        location (request-byte-position state params content)
+        context (lookup/call-context location content)
+        callee (and context (context :callee))
+        signature (and callee (doc/get-signature (symbol callee) eval-env))]
+    (if (or (nil? context) (nil? signature))
+      [:ok state :null]
+      (let [inside (string/trim signature "()")
+            tokens (filter |(not (empty? $)) (string/split " " inside))
+            parameters (map |{:label $} (array/slice tokens 1))
+            active (if (empty? parameters)
+                     0
+                     (min (context :active-parameter) (dec (length parameters))))
+            message {:signatures [{:label signature
+                                   :documentation {:kind "markdown"
+                                                   :value (doc/my-doc* (symbol callee) eval-env)}
+                                   :parameters parameters}]
+                     :activeSignature 0
+                     :activeParameter active}]
         (logging/message message [:signature])
         [:ok state message]))))
 
@@ -420,7 +426,8 @@
                                 :diagnosticProvider {:interFileDependencies true
                                                      :workspaceDiagnostics false}
                                 :hoverProvider true
-                                :signatureHelpProvider {:triggerCharacters [" "]}
+                                :signatureHelpProvider {:triggerCharacters ["(" " "]
+                                                        :retriggerCharacters [" "]}
                                 :documentFormattingProvider true
                                 :definitionProvider true
                                 :workspace {:workspaceFolders

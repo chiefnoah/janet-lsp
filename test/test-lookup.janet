@@ -350,3 +350,13 @@
   (test (get (word-at {:line 0 :character 2} "\"hidden\"") :word) "")
   (test (sexp-at {:line 0 :character 5} "\"(hidden)\"")
         {:source "" :range @[0 5]}))
+
+(deftest "find enclosing calls and active arguments"
+  (def source "(string \"a ( )\" # ignored )\n  x (+ 1 2) y")
+  (def outer (call-context {:line 1 :character 15} source))
+  (def nested (call-context {:line 1 :character 10} source))
+  (test (get outer :callee) "string")
+  (test (get outer :active-parameter) 3)
+  (test (get nested :callee) "+")
+  (test (get nested :active-parameter) 1)
+  (test (call-context {:line 0 :character 3} "not-a-call") nil))
