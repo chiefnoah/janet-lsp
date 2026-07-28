@@ -141,12 +141,12 @@
 (defn- same-position? [a b]
   (and a b (= (a :line) (b :line)) (= (a :character) (b :character))))
 
-(defn analyze [document-uri content]
+(defn analyze [document-uri content &opt syntax-tree]
   (def definitions @[])
   (def references @[])
   (def imports @[])
   (try
-    (each node ((parser/syntax-tree content) :value)
+    (each node ((or syntax-tree (parser/syntax-tree content)) :value)
       (collect-nodes node document-uri content definitions references imports 0 nil))
     ([_] nil))
   (each reference references
@@ -261,9 +261,8 @@
   (put (workspace :index) document-uri (analyze document-uri content))
   (relink workspace))
 
-(defn add-generated [workspace document-uri env]
-  (when-let [record (get (workspace :index) document-uri)
-             document-path (uri/file-uri->path document-uri)]
+(defn add-generated-to-record [record document-uri document-path env]
+  (when (and record document-path)
     (each name (all-bindings env)
       (def binding (get env name))
       (when-let [[source-path line column]
@@ -288,6 +287,16 @@
              :range {:start location :end location}
              :selection-range {:start location :end location}
              :children @[]})))))
+  record)
+
+(defn update-record [workspace document-uri record]
+  (put (workspace :index) document-uri record)
+  (relink workspace))
+
+(defn add-generated [workspace document-uri env]
+  (when-let [record (get (workspace :index) document-uri)]
+    (add-generated-to-record record document-uri
+                             (uri/file-uri->path document-uri) env))
   (relink workspace))
 
 (defn remove [workspace document-uri]

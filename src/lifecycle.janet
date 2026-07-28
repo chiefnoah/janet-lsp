@@ -52,7 +52,7 @@
     {:capabilities
      {:positionEncoding encoding
       :completionProvider {:resolveProvider true}
-      :textDocumentSync {:openClose true :change 1}
+      :textDocumentSync {:openClose true :change 2}
       :diagnosticProvider {:interFileDependencies true :workspaceDiagnostics false}
       :hoverProvider true
       :signatureHelpProvider {:triggerCharacters ["(" " "]

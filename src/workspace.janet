@@ -1,4 +1,4 @@
-(import ./diagnostics)
+(import ./analysis)
 (import ./index)
 (import ./logging)
 (import ./rpc)
@@ -9,6 +9,8 @@
 
 (def indexer-script
   (path/join (path/dirname (dyn :current-file)) "indexer.janet"))
+
+(varfn reanalyze-open-documents [])
 
 (defn- janet-executable []
   (def executable (dyn :executable))
@@ -117,14 +119,17 @@
           ([err] {:ok false :error (string "invalid indexer output: " err)})))
       (os/rm output)
       (def status (os/proc-wait (workspace :scan)))
-      (when (and (= true (result :ok)) (= 0 status))
+      (def succeeded (and (= true (result :ok)) (= 0 status)))
+      (when succeeded
         (put workspace :index (result :index)))
       (put workspace :scan nil)
       (put workspace :scan-output nil)
-      (each document (values (state :documents))
-        (when (= workspace (server-utils/document-workspace state document))
-          (index/update workspace (document :uri) (document :content))))
-      (def succeeded (and (= true (result :ok)) (= 0 status)))
+      (if succeeded
+        (reanalyze-open-documents state [workspace])
+        (each document (values (state :documents))
+          (when (= workspace (server-utils/document-workspace state document))
+            (when-let [snapshot (analysis/current document workspace)]
+              (index/update-record workspace (document :uri) (snapshot :index))))))
       (unless succeeded
         (logging/warn (string "Workspace index failed: "
                               (or (result :error) (string "exit status " status)))
@@ -163,15 +168,18 @@
   state)
 
 (defn on-watched-files-changed [state params]
+  (def changed-workspaces @[])
   (each change (get params "changes")
     (def document-uri (get change "uri"))
     (def filepath (uri/file-uri->path document-uri))
     (def workspace (server-utils/workspace-for-path state filepath))
     (unless (= workspace (state :standalone-workspace))
+      (array/push changed-workspaces workspace)
       (case (get change "type")
         3 (index/remove workspace document-uri)
         (when (and filepath (os/stat filepath) (string/has-suffix? ".janet" filepath))
           (try (index/update workspace document-uri (slurp filepath)) ([_] nil))))))
+  (reanalyze-open-documents state (distinct changed-workspaces))
   [:noresponse state])
 
 (defn initialization-uris [params]
@@ -202,18 +210,12 @@
                                       {:title "Keep Restricted"}]}})))
   requests)
 
-(defn reanalyze-open-documents [state]
+(varfn reanalyze-open-documents [state &opt workspaces]
   (each document (values (state :documents))
-    (def [_ env]
-      (diagnostics/run (document :path) (document :content)
-                       (state :position-encoding)
-                       (server-utils/document-workspace state document)
-                       (document :version)))
-    (put document :eval-env env)
-    (index/update (server-utils/document-workspace state document)
-                  (document :uri) (document :content))
-    (index/add-generated (server-utils/document-workspace state document)
-                         (document :uri) env))
+    (def owner (server-utils/document-workspace state document))
+    (when (or (nil? workspaces) (has-value? workspaces owner))
+      (analysis/invalidate document)
+      (analysis/refresh document owner (state :position-encoding))))
   state)
 
 (defn on-folders-changed [state params]

@@ -438,6 +438,67 @@
   (test (get-in response [:params :version]) 2)
   (test (get-in response [:params :diagnostics]) @[]))
 
+(deftest "negotiate and apply incremental document synchronization"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (test (get-in (cursor :initialize)
+                [:result :capabilities :textDocumentSync :change])
+        2)
+  (open-text-document cursor document-uri
+                      "(def greeting \"😀\")\ngreeting\n")
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges
+           [{:range {:start {:line 0 :character 5}
+                     :end {:line 0 :character 13}}
+             :rangeLength 8
+             :text "message"}
+            {:range {:start {:line 1 :character 0}
+                     :end {:line 1 :character 8}}
+             :rangeLength 8
+             :text "message"}]})
+  (def definition
+    (request cursor 139 "textDocument/definition"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 3}}))
+  (test (get-in definition [:result :range :start :character]) 0)
+
+  # A failed second event must roll back the valid first event in the batch.
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 3}
+           :contentChanges
+           [{:range {:start {:line 0 :character 5}
+                     :end {:line 0 :character 12}}
+             :text "broken"}
+            {:range {:start {:line 8 :character 0}
+                     :end {:line 8 :character 1}}
+             :text "invalid"}]})
+  (def completion
+    (request cursor 140 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 7}}))
+  (test (has-value? (map |($ :label) (get-in completion [:result :items]))
+                    "message")
+        true)
+  (test (has-value? (map |($ :label) (get-in completion [:result :items]))
+                    "broken")
+        false)
+  (test (get-in completion [:result :items 0 :data :version]) 2)
+
+  # UTF-16 range positions count the astral symbol as two code units.
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 3}
+           :contentChanges
+           [{:range {:start {:line 0 :character 14}
+                     :end {:line 0 :character 16}}
+             :rangeLength 2
+             :text "ok"}]})
+  (def updated
+    (request cursor 141 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 7}}))
+  (test (get-in updated [:result :items 0 :data :version]) 3)
+  (exit-lsp cursor))
+
 (deftest "pull clients use changed document analysis"
   (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
   (notify cursor "textDocument/didOpen"

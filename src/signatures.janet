@@ -85,6 +85,10 @@
   (def matches (filter |(= name ($ :name)) (all source)))
   (when (= 1 (length matches)) (matches 0)))
 
+(defn find-in [all-signatures name]
+  (def matches (filter |(= name ($ :name)) all-signatures))
+  (when (= 1 (length matches)) (matches 0)))
+
 (defn- diagnostic [code severity message form]
   (def [line column] (tuple/sourcemap form))
   {:code code :severity severity :message message :location [line column]})

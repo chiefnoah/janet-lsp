@@ -105,3 +105,8 @@
   (byte->lsp-position source
                       {:line line-number :character (length (lines line-number))}
                       encoding))
+
+(defn text-units [source encoding]
+  (def lines (string/split "\n" source))
+  (+ (max 0 (dec (length lines)))
+     (sum (map |(byte-to-units $ (length $) encoding) lines))))

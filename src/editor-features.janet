@@ -1,5 +1,4 @@
 (import ./doc)
-(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./parser)
@@ -32,7 +31,9 @@
         content (document :content)
         location (server-utils/request-byte-position state params content)
         context (lookup/call-context location content)
-        signature (and context (signatures/find content (context :callee)))
+        signature (and context
+                       (signatures/find-in (get-in document [:analysis :signatures] @[])
+                                           (context :callee)))
         used-named (if signature
                      (signatures/used-named-arguments content context signature)
                      @[])
@@ -51,7 +52,8 @@
         prefix (string/slice (word :word) 0
                              (max 0 (- (location :character)
                                        (first (word :range)))))
-        locals (parser/get-syms-at-loc location content)
+        locals (parser/get-syms-at-loc location content
+                                       (get-in document [:analysis :syntax-tree]))
         globals (seq [binding :in (all-bindings (document :eval-env))]
                   (binding-to-lsp-item binding (document :eval-env)))
         bindings (utils/concat-dedup-by-label named-items locals globals)
@@ -110,7 +112,10 @@
                   (server-utils/request-byte-position state params (document :content))
                   (document :content))
         callee (and context (context :callee))
-        static-signature (and callee (signatures/find (document :content) callee))
+        static-signature
+        (and callee
+             (signatures/find-in (get-in document [:analysis :signatures] @[])
+                                 callee))
         runtime-signature
         (and (not static-signature) callee
              (doc/get-signature (symbol callee) (document :eval-env)))]
@@ -140,46 +145,12 @@
           :activeSignature 0
           :activeParameter active}]))))
 
-(defn- semantic-token-records [document]
-  (def record (index/analyze (document :uri) (document :content)))
-  (def definitions (record :definitions))
-  (def records @[])
-  (each definition definitions
-    (array/push records {:range (definition :selection-range)
-                         :type (if (= 12 (definition :kind)) 2 4)
-                         :modifiers 3})
-    (each parameter (definition :children)
-      (array/push records {:range (parameter :selection-range)
-                           :type 5 :modifiers 1})))
-  (each reference (record :references)
-    (def range (reference :range))
-    (unless (any? (map |(deep= range ($ :range)) records))
-      (def name (reference :name))
-      (def definition (first (filter |(= name ($ :name)) definitions)))
-      (def binding (get (document :eval-env) (symbol name) nil))
-      (array/push records
-                  {:range range
-                   :type (cond
-                           (string/has-prefix? ":" name) 6
-                           (scan-number name) 8
-                           (string/find "/" name) 0
-                           definition (if (= 12 (definition :kind)) 2 4)
-                           (and binding (binding :macro)) 3
-                           (and binding
-                                (has-value? [:function :cfunction]
-                                            (type (binding :value)))) 2
-                           4)
-                   :modifiers 0})))
-  (sort-by |[(get-in $ [:range :start :line])
-             (get-in $ [:range :start :character])]
-           records))
-
 (defn on-semantic-tokens-full [state params]
   (def document (server-utils/document state params))
   (def data @[])
   (var previous-line 0)
   (var previous-character 0)
-  (each token (semantic-token-records document)
+  (each token (get-in document [:analysis :semantic] @[])
     (def range (server-utils/lsp-range state (document :content) (token :range)))
     (def start (range :start))
     (def end (range :end))
@@ -245,7 +216,7 @@
           content (document :content)
           requested (get params "range")
           hints @[]]
-      (each reference ((index/analyze (document :uri) content) :references)
+      (each reference (get-in document [:analysis :references] @[])
         (def byte-start (get-in reference [:range :start]))
         (def byte-end (get-in reference [:range :end]))
         (def position (position/byte->lsp-position content byte-start

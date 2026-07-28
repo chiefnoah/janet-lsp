@@ -285,11 +285,13 @@
 
 (defn get-syms-at-loc
   "Produce locally visible symbols as lsp items for source at location loc"
-  [loc source]
+  [loc source &opt syntax-tree]
   (try
     (let [blanked-source (get-blanked-source loc source)
           index (lookup/to-index loc source)
-          tree (make-tree blanked-source)]
+          tree (if (and syntax-tree (= blanked-source source))
+                 syntax-tree
+                 (make-tree blanked-source))]
       (or (get-syms-from-tree tree index) @[]))
     ([_] @[])))
 

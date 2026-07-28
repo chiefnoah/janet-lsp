@@ -90,7 +90,7 @@
 
 (defn on-document-symbols [state params]
   (if-let [document (server-utils/document state params)]
-    (let [record (index/analyze (document :uri) (document :content))
+    (let [record (get-in document [:analysis :index])
           definitions (record :definitions)]
       [:ok state
        (map |(document-symbol state (document :content) $ definitions)
@@ -116,16 +116,26 @@
 (defn- raw-references [context include-declaration]
   (var locations @[])
   (if (context :local)
-    (each reference (parser/references-for (context :name) (context :content))
-      (def reference-start (get-in reference [:range :start]))
-      (def resolved (parser/definition-at reference-start
-                                          (context :content) (context :name)))
-      (when (or (server-utils/same-position?
-                  reference-start (get-in context [:local :range :start]))
-                (server-utils/same-position?
-                  (get-in resolved [:range :start])
-                  (get-in context [:local :range :start])))
-        (array/push locations {:uri (context :uri) :range (reference :range)})))
+    (let [definition-start (get-in context [:local :range :start])
+          record (get-in context [:document :analysis :index])
+          indexed-definition
+          (first (filter |(server-utils/same-position?
+                            definition-start (get-in $ [:selection-range :start]))
+                         (record :definitions)))
+          identity (if indexed-definition
+                     (indexed-definition :identity)
+                     (string (context :uri) "#local:"
+                             (definition-start :line) ":"
+                             (definition-start :character)))]
+      (each reference (record :references)
+        (when (= identity (reference :identity))
+          (array/push locations {:uri (context :uri) :range (reference :range)})))
+      (when (and include-declaration
+                 (not (any? (map |(server-utils/same-position?
+                                    definition-start (get-in $ [:range :start]))
+                                 locations))))
+        (array/push locations {:uri (context :uri)
+                               :range (get-in context [:local :range])})))
     (each reference
           (index/references-by-identity (context :workspace)
                                         (get-in context [:indexed :identity]))

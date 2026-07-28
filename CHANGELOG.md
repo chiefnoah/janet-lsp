@@ -30,6 +30,10 @@ Format for entires is <version-string> - release date.
 - Workspace indexing now uses positioned parser nodes for multiline definitions,
   nested symbols, destructured parameters, imports, aliases, selective imports,
   re-exports, generated trusted definitions, and cross-file binding identities.
+- Documents now negotiate validated incremental synchronization and retain a
+  bounded cache of versioned parse, diagnostic, environment, index, reference,
+  signature, and semantic snapshots shared across language features. Workspace
+  ownership, index, and trust changes invalidate affected snapshots.
 
 ## 0.0.11 - 2026-02-14
 

@@ -1,7 +1,7 @@
 (import ../libs/fmt)
-(import ./diagnostics)
-(import ./index)
+(import ./analysis)
 (import ./logging)
+(import ./lookup)
 (import ./position)
 (import ./server-utils)
 (import ./uri)
@@ -17,25 +17,74 @@
   (logging/message message [:diagnostics])
   [:ok state message :notify true])
 
+(defn- integer? [value]
+  (and (number? value) (= value (math/floor value))))
+
+(defn apply-changes [content changes encoding]
+  (if (or (not (indexed? changes)) (empty? changes))
+    nil
+    (do
+      (var updated content)
+      (var valid true)
+      (each change changes
+        (when valid
+          (def text (get change "text"))
+          (def range (get change "range"))
+          (cond
+            (not (string? text))
+            (set valid false)
+
+            (nil? range)
+            (set updated text)
+
+            (let [start (position/lsp->byte-position
+                          updated (get range "start") encoding)
+                  end (position/lsp->byte-position
+                        updated (get range "end") encoding)]
+              (if (or (nil? start) (nil? end))
+                (set valid false)
+                (let [start-index (lookup/to-index start updated)
+                      end-index (lookup/to-index end updated)
+                      range-length (get change "rangeLength")]
+                  (if (or (> start-index end-index)
+                          (and (not (nil? range-length))
+                               (or (not (integer? range-length))
+                                   (not= range-length
+                                         (position/text-units
+                                           (string/slice updated start-index end-index)
+                                           encoding)))))
+                    (set valid false)
+                    (set updated
+                         (string (string/slice updated 0 start-index)
+                                 text
+                                 (string/slice updated end-index))))))))))
+      (if valid updated nil))))
+
+(defn- refresh [state document workspace]
+  (analysis/refresh document workspace (state :position-encoding)))
+
 (defn on-change [state params]
   (let [document (server-utils/document state params)
         version (get-in params ["textDocument" "version"])
         current-version (and document (document :version))]
     (if (or (nil? document)
-            (and (number? version) (number? current-version)
-                 (<= version current-version)))
+            (not (integer? version))
+            (and (integer? current-version) (<= version current-version)))
       [:noresponse state]
       (let [workspace (server-utils/document-workspace state document)
-            content (get-in params ["contentChanges" 0 "text"])
-            [diagnostics env]
-            (diagnostics/run (document :path) content (state :position-encoding)
-                             workspace version)]
-        (merge-into document {:content content :version version :eval-env env})
-        (index/update workspace (document :uri) content)
-        (index/add-generated workspace (document :uri) env)
-        (if (dyn :push-diagnostics)
-          (publish state document diagnostics version)
-          [:noresponse state])))))
+            content (apply-changes (document :content)
+                                   (get params "contentChanges")
+                                   (state :position-encoding))]
+        (if (nil? content)
+          (do
+            (logging/warn "Ignoring invalid incremental document change" [:change])
+            [:noresponse state])
+          (do
+            (merge-into document {:content content :version version})
+            (def snapshot (refresh state document workspace))
+            (if (dyn :push-diagnostics)
+              (publish state document (snapshot :diagnostics) version)
+              [:noresponse state])))))))
 
 (defn on-close [state params]
   (if-let [document (server-utils/document state params)]
@@ -49,12 +98,9 @@
 (defn on-diagnostic [state params]
   (if-let [document (server-utils/document state params)]
     (let [workspace (server-utils/document-workspace state document)
-          [items env]
-          (diagnostics/run (document :path) (document :content)
-                           (state :position-encoding) workspace (document :version))
-          report {:kind "full" :items items}]
-      (put document :eval-env env)
-      (index/add-generated workspace (document :uri) env)
+          snapshot (or (analysis/current document workspace)
+                       (refresh state document workspace))
+          report {:kind "full" :items (snapshot :diagnostics)}]
       (logging/message report [:diagnostics])
       [:ok state report])
     [:ok state :null]))
@@ -83,17 +129,15 @@
         version (get-in params ["textDocument" "version"])
         filepath (uri/file-uri->path document-uri)
         workspace (server-utils/workspace-for-path state filepath)
-        [items env]
-        (diagnostics/run filepath content (state :position-encoding) workspace version)
         document @{:content content
                    :version version
                    :uri document-uri
                    :path filepath
-                   :eval-env env}]
+                   :snapshots @{}
+                   :snapshot-order @[]}
+        snapshot (refresh state document workspace)]
     (put (state :documents) document-uri document)
-    (index/update workspace document-uri content)
-    (index/add-generated workspace document-uri env)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
-      (publish state document items version)
+      (publish state document (snapshot :diagnostics) version)
       [:noresponse state])))

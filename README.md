@@ -8,7 +8,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 
 ### Stable Features
 
-- Full open/change/close document synchronization with UTF-16 and UTF-8 positions
+- Validated incremental open/change/close synchronization with UTF-16 and UTF-8 positions
 - Core and lexical completion with document-aware completion resolution
 - Named-argument completion, hover documentation, and active-parameter signature help
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
@@ -19,6 +19,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Full-document semantic tokens and deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis
+- Bounded versioned analysis snapshots shared across language features
 
 ### Experimental Features
 

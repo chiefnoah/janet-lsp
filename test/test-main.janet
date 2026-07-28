@@ -1,6 +1,8 @@
 (use judge)
 
 (import ../src/main)
+(import ../src/analysis)
+(import ../src/documents)
 (import ../src/editor-features)
 (import ../src/eval)
 (import ../src/logging)
@@ -26,6 +28,70 @@
 (deftest "select configured debug ports"
   (test (logging/debug-port nil) "8037")
   (test (logging/debug-port {:debug-port 9123}) "9123"))
+
+(deftest "apply validated incremental document changes atomically"
+  (def source "a😀b\nsecond")
+  (test (documents/apply-changes
+          source
+          [{"range" {"start" {"line" 0 "character" 1}
+                       "end" {"line" 0 "character" 3}}
+            "rangeLength" 2
+            "text" "X"}
+           {"range" {"start" {"line" 1 "character" 0}
+                       "end" {"line" 1 "character" 6}}
+            "rangeLength" 6
+            "text" "next"}]
+          "utf-16")
+        "aXb\nnext")
+  (test (documents/apply-changes
+          source
+          [{"range" {"start" {"line" 0 "character" 1}
+                       "end" {"line" 0 "character" 5}}
+            "rangeLength" 4
+            "text" "X"}]
+          "utf-8")
+        "aXb\nsecond")
+  (test (documents/apply-changes source
+                                 [{"range" {"start" {"line" 0 "character" 1}
+                                            "end" {"line" 0 "character" 3}}
+                                   "rangeLength" 1
+                                   "text" "X"}]
+                                 "utf-16")
+        nil)
+  (test (documents/apply-changes
+          source
+          [{"range" {"start" {"line" 0 "character" 0}
+                       "end" {"line" 0 "character" 1}}
+            "text" "changed"}
+           {"range" {"start" {"line" 9 "character" 0}
+                       "end" {"line" 9 "character" 1}}
+            "text" "invalid"}]
+          "utf-16")
+        nil)
+  (test (documents/apply-changes source [{"text" "replacement"}] "utf-16")
+        "replacement"))
+
+(deftest "bound versioned document snapshot caches"
+  (def document @{:content "value" :version 1})
+  (for version 1 7
+    (analysis/store document {:key (string version ":snapshot")
+                              :version version
+                              :eval-env (make-env root-env)}))
+  (test (length (document :snapshots)) 4)
+  (test (document :snapshot-order)
+        @["3:snapshot" "4:snapshot" "5:snapshot" "6:snapshot"])
+  (analysis/invalidate document)
+  (test (document :analysis) nil)
+  (test (document :snapshots) @{})
+  (def workspace @{:uri "file:///workspace" :trusted false})
+  (analysis/store document {:key (analysis/key 1 "value")
+                            :version 1
+                            :workspace-uri "file:///workspace"
+                            :trusted false
+                            :eval-env (make-env root-env)})
+  (test (not (nil? (analysis/current document workspace))) true)
+  (put workspace :trusted true)
+  (test (analysis/current document workspace) nil))
 
 (deftest "index definitions and code references"
   (def record
