@@ -24,6 +24,9 @@ Format for entires is <version-string> - release date.
   are reported and reaped without leaving scans stuck.
 - Static linting respects the analysis size bound, handles destructured
   parameters, and suppresses unused warnings when macros may synthesize reads.
+- Restricted analysis now validates provable same-file positional and named
+  calls. Completion and signature help expose `&named` parameters and suppress
+  names already supplied by the caller.
 
 ## 0.0.11 - 2026-02-14
 

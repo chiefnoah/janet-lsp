@@ -5,6 +5,7 @@
 (import ./parser)
 (import ./position)
 (import ./server-utils)
+(import ./signatures)
 (import ./utils)
 
 (defmacro binding-to-lsp-item
@@ -30,6 +31,22 @@
   (let [document (server-utils/document state params)
         content (document :content)
         location (server-utils/request-byte-position state params content)
+        context (lookup/call-context location content)
+        signature (and context (signatures/find content (context :callee)))
+        used-named (if signature
+                     (signatures/used-named-arguments content context signature)
+                     @[])
+        named-items
+        (if (and signature
+                 (>= (context :active-parameter)
+                     (max 0 (dec (signature :positional)))))
+          (catseq [parameter :in (signature :named)
+                   :when (not (has-value? used-named (parameter :label)))]
+            {:label (parameter :label)
+             :kind 14
+             :detail (string "Named argument for " (signature :name))
+             :insertText (string (parameter :label) " ")})
+          @[])
         word (lookup/word-at location content)
         prefix (string/slice (word :word) 0
                              (max 0 (- (location :character)
@@ -37,7 +54,7 @@
         locals (parser/get-syms-at-loc location content)
         globals (seq [binding :in (all-bindings (document :eval-env))]
                   (binding-to-lsp-item binding (document :eval-env)))
-        bindings (utils/concat-dedup-by-label locals globals)
+        bindings (utils/concat-dedup-by-label named-items locals globals)
         matching (if (empty? prefix)
                    bindings
                    (filter |(string/has-prefix? prefix (string ($ :label))) bindings))
@@ -54,11 +71,12 @@
 (defn on-completion-resolve [state params]
   (def label (or (get-in params ["data" "binding"]) (get params "label")))
   (def eval-env (get-in state [:documents (get-in params ["data" "uri"]) :eval-env]))
-  (def result
-    (merge params
-           {"documentation"
-            {:kind "markdown"
-             :value (doc/my-doc* (symbol label) (or eval-env (make-env root-env)))}}))
+  (def documentation
+    (doc/my-doc* (symbol label) (or eval-env (make-env root-env))))
+  (def result (if documentation
+                (merge params {"documentation" {:kind "markdown"
+                                                 :value documentation}})
+                params))
   (logging/message result [:completion])
   [:ok state result])
 
@@ -92,19 +110,33 @@
                   (server-utils/request-byte-position state params (document :content))
                   (document :content))
         callee (and context (context :callee))
-        signature (and callee (doc/get-signature (symbol callee) (document :eval-env)))]
-    (if (nil? signature)
+        static-signature (and callee (signatures/find (document :content) callee))
+        runtime-signature
+        (and (not static-signature) callee
+             (doc/get-signature (symbol callee) (document :eval-env)))]
+    (if (and (nil? static-signature) (nil? runtime-signature))
       [:ok state :null]
-      (let [parameters (signature-parameters signature)
+      (let [label (if static-signature
+                    (static-signature :label)
+                    runtime-signature)
+            parameters (if static-signature
+                         (map |{:label ($ :label)}
+                              (static-signature :parameters))
+                         (signature-parameters runtime-signature))
             active (if (empty? parameters)
                      0
-                     (min (context :active-parameter) (dec (length parameters))))]
+                     (if static-signature
+                       (signatures/active-parameter
+                         static-signature context (document :content))
+                       (min (context :active-parameter) (dec (length parameters)))))
+            documentation (doc/my-doc* (symbol callee) (document :eval-env))
+            signature-info
+            (merge {:label label :parameters parameters}
+                   (if documentation
+                     {:documentation {:kind "markdown" :value documentation}}
+                     {}))]
         [:ok state
-         {:signatures [{:label signature
-                        :documentation {:kind "markdown"
-                                        :value (doc/my-doc* (symbol callee)
-                                                            (document :eval-env))}
-                        :parameters parameters}]
+         {:signatures [signature-info]
           :activeSignature 0
           :activeParameter active}]))))
 

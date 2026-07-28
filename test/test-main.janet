@@ -10,6 +10,7 @@
 (import ../src/transport)
 (import ../src/uri)
 (import ../src/server-utils)
+(import ../src/signatures)
 (import ../src/workspace)
 (import spork/json)
 (import spork/path)
@@ -49,6 +50,39 @@
   (test (lint/analyze
           "(defmacro use-value [] 'value)\n(defn run [value] (use-value))\n")
         @[]))
+
+(deftest "validate safe positional and named calls"
+  (def source
+    (string "(defn exact [a] nil)\n"
+            "(defn run [required &opt optional &named option] nil)\n"
+            "(exact)\n"
+            "(exact 1 2)\n"
+            "(run 1 2 :unknown 3)\n"
+            "(run 1 2 :option 3 :option 4)\n"
+            "(run 1 2 :option)\n"
+            "(defn caller [run] (run))\n"))
+  (test (map |($ :code) (signatures/diagnostics source))
+        @["janet.call.missing-arguments"
+          "janet.call.extra-arguments"
+          "janet.call.unknown-named-argument"
+          "janet.call.duplicate-named-argument"
+          "janet.call.odd-named-arguments"])
+  (def signature (signatures/find source "run"))
+  (test (signature :label) "(run required &opt optional &named option)")
+  (test (map |($ :label) (signature :parameters))
+        @["required" "optional" ":option"])
+  (def conservative
+    (string "(defn optional [a &opt b] nil)\n(optional 1)\n"
+            "(defn variadic [a & rest] nil)\n(variadic)\n(variadic 1 2)\n"
+            "(defn destruct [[a b]] nil)\n(destruct)\n(destruct [1 2])\n"
+            "(defn exact [a] nil)\n(exact ;args)\n"))
+  (test (map |($ :code) (signatures/diagnostics conservative))
+        @["janet.call.missing-arguments"
+          "janet.call.missing-arguments"])
+  (test (signatures/find
+          "(defn duplicate [a] nil)\n(defn duplicate [a b] nil)\n"
+          "duplicate")
+        nil))
 
 (deftest "convert negotiated position encodings"
   (def line "aé☃😀é")

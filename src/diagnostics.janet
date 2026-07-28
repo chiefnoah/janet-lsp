@@ -2,6 +2,7 @@
 (import ./logging)
 (import ./lint)
 (import ./position)
+(import ./signatures)
 
 (defn- code [message]
   (cond
@@ -25,7 +26,11 @@
         lint-results (if (> (length content) eval/max-source-bytes)
                        @[]
                        (lint/analyze content env))
-        results (array ;compiler-results ;lint-results)]
+        call-results (if (or (workspace :trusted)
+                             (> (length content) eval/max-source-bytes))
+                       @[]
+                       (signatures/diagnostics content))
+        results (array ;compiler-results ;lint-results ;call-results)]
     (logging/dbg (string/format "eval-buffer returned: %m" results) [:evaluation])
     (each result results
       (def diagnostic-code (get result :code))

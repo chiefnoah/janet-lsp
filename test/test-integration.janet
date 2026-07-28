@@ -911,6 +911,52 @@
         true)
   (exit-lsp cursor))
 
+(deftest "provide restricted call diagnostics and named argument help"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def definition
+    "(defn run [required &opt optional &named option other] required)")
+  (open-text-document cursor document-uri (string definition "\n(run)\n"))
+  (def report
+    (request cursor 131 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (has-value? (map |($ :code) (get-in report [:result :items]))
+                    "janet.call.missing-arguments")
+        true)
+
+  (def partial-call "(run 1 nil :op)")
+  (change-text-document cursor document-uri
+                        (string definition "\n" partial-call "\n") 2)
+  (def labels
+    (completion-labels cursor 132 document-uri 1 (dec (length partial-call))))
+  (test (has-value? labels ":option") true)
+
+  (def keyword-positional "(run 1 :option )")
+  (change-text-document cursor document-uri
+                        (string definition "\n" keyword-positional "\n") 3)
+  (def after-keyword-positional
+    (completion-labels cursor 133 document-uri 1
+                       (dec (length keyword-positional))))
+  (test (has-value? after-keyword-positional ":option") true)
+
+  (def named-call "(run 1 nil :option 2 )")
+  (change-text-document cursor document-uri
+                        (string definition "\n" named-call "\n") 4)
+  (def remaining
+    (completion-labels cursor 134 document-uri 1 (dec (length named-call))))
+  (test (has-value? remaining ":option") false)
+  (test (has-value? remaining ":other") true)
+  (def signature
+    (request cursor 135 "textDocument/signatureHelp"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character (dec (length named-call))}}))
+  (test (get-in signature [:result :signatures 0 :label])
+        "(run required &opt optional &named option other)")
+  (test (map |($ :label)
+             (get-in signature [:result :signatures 0 :parameters]))
+        @["required" "optional" ":option" ":other"])
+  (test (get-in signature [:result :activeParameter]) 2)
+  (exit-lsp cursor))
+
 (deftest: with-process "cancel pull diagnostic requests" [cursor]
   (notify cursor "$/cancelRequest" {:id 70})
   (def cancelled

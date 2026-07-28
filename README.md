@@ -10,7 +10,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 
 - Full open/change/close document synchronization with UTF-16 and UTF-8 positions
 - Core and lexical completion with document-aware completion resolution
-- Hover documentation and active-parameter signature help
+- Named-argument completion, hover documentation, and active-parameter signature help
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
 - Local, imported, indexed, and runtime source-map definition lookup
@@ -117,16 +117,18 @@ not include text edits. Disable the category with:
 
 ### Static Diagnostics
 
-Janet LSP reports parse errors and deterministic unused-parameter warnings in
-all workspaces. Prefix an intentionally unused parameter with `_` to suppress
-the warning.
+Janet LSP reports parse errors, deterministic unused-parameter warnings, and
+provable same-file positional and named-argument mistakes in all workspaces.
+This includes missing or extra positional arguments, odd named pairs, unknown
+named arguments, and duplicate named arguments. Prefix an intentionally unused
+parameter with `_` to suppress its warning.
 
-Trusted workspace analysis also invokes Janet's compiler. This catches unknown
-symbol reads, missing or extra positional arguments, macro arity mismatches,
-and unknown named arguments. Named parameters introduced by `&named` are
-optional in Janet; passing an unsupported name is a warning, while omitting a
-named parameter is not an error. Compiler-backed checks remain trust-gated
-because compiling Janet can execute macros and imports.
+Trusted workspace analysis also invokes Janet's compiler. This extends checks
+to unknown symbol reads, imported or generated functions, and macro arity.
+Named parameters introduced by `&named` are optional in Janet; passing an
+unsupported name is a warning, while omitting a named parameter is not an
+error. Compiler-backed checks remain trust-gated because compiling Janet can
+execute macros and imports.
 
 ## Getting Started (for Development)
 
