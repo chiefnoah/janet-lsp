@@ -35,9 +35,7 @@
   (let [items @[]
         [diagnostics env]
         (eval/eval-buffer content
-                          (if filepath
-                            (path/relpath (os/cwd) filepath)
-                            "untitled.janet")
+                          (or filepath "untitled.janet")
                           {:trusted (workspace :trusted)
                            :base-env (workspace :env)
                            :unique-paths (workspace :unique-paths)})]
@@ -62,6 +60,26 @@
 (defn document-key [uri]
   uri)
 
+(defn- path-in-workspace? [filepath root-path]
+  (def candidate (if (= :windows (os/which)) (string/ascii-lower filepath) filepath))
+  (def root (if (= :windows (os/which)) (string/ascii-lower root-path) root-path))
+  (or (= candidate root)
+      (string/has-prefix? (string root (if (string/has-suffix? "/" root) "" "/"))
+                          candidate)))
+
+(defn workspace-for-path [state filepath]
+  (var owner nil)
+  (when filepath
+    (each workspace (values (state :workspaces))
+      (when (and (path-in-workspace? filepath (workspace :path))
+                 (or (nil? owner)
+                     (> (length (workspace :path)) (length (owner :path)))))
+        (set owner workspace))))
+  (or owner (state :standalone-workspace)))
+
+(defn document-workspace [state document]
+  (workspace-for-path state (document :path)))
+
 (defn request-byte-position [state params content]
   (position/lsp->byte-position content (get params "position")
                                (state :position-encoding)))
@@ -83,10 +101,11 @@
                  (number? current-version)
                  (<= version current-version)))
       [:noresponse state]
-      (let [content (get-in params ["contentChanges" 0 "text"])
+      (let [workspace (document-workspace state document)
+            content (get-in params ["contentChanges" 0 "text"])
             [diagnostics env] (run-diagnostics (document :path) content
                                                (state :position-encoding)
-                                               (state :workspace))]
+                                               workspace)]
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
@@ -119,9 +138,10 @@
         document (get-in state [:documents uri])]
     (if (nil? document)
       [:ok state :null]
-      (let [[diagnostics env] (run-diagnostics (document :path) (document :content)
+      (let [workspace (document-workspace state document)
+            [diagnostics env] (run-diagnostics (document :path) (document :content)
                                                (state :position-encoding)
-                                               (state :workspace))
+                                               workspace)
             message {:kind "full"
                      :items diagnostics}]
         (put document :eval-env env)
@@ -153,9 +173,10 @@
         uri (document-key client-uri)
         version (get-in params ["textDocument" "version"])
         filepath (uri/file-uri->path client-uri)
+        workspace (workspace-for-path state filepath)
         [diagnostics env] (run-diagnostics filepath content
                                            (state :position-encoding)
-                                           (state :workspace))]
+                                           workspace)]
     (put-in state [:documents uri] @{:content content
                                      :version version
                                      :uri client-uri
@@ -200,20 +221,14 @@
                    (binding-to-lsp-item bind eval-env))
         deduped-bindings (utils/concat-dedup-by-label local-bindings bindings)
         message {:isIncomplete true
-                 :items deduped-bindings}]
+                 :items (map |(merge $ {:data {:uri uri}}) deduped-bindings)}]
     (logging/message message [:completion] 1)
     [:ok state message]))
 
 (defn on-completion-item-resolve [state params]
-  (var eval-env nil)
   (def lbl (get params "label"))
-  (def envs (seq [docu :in (state :documents)]
-              (docu :eval-env)))
-
-  (each env envs
-    (when (env (symbol lbl))
-      (set eval-env env)
-      (break)))
+  (def document-uri (get-in params ["data" "uri"]))
+  (def eval-env (get-in state [:documents document-uri :eval-env]))
 
   (let [message {:label lbl
                  :documentation
@@ -289,17 +304,10 @@
            [(path/join (path/dirname found-path)
                        (string ":all:" (path/ext found-path)))]))
        flatten
-       distinct
-       (map |(path/relpath (os/cwd) $))
-       (map |(string "./" $))))
+       distinct))
 
-(defn configure-workspace [params]
-  (def root-uri (get params "rootUri"))
+(defn configure-workspace [root-uri trusted-workspaces]
   (def root-path (uri/file-uri->path root-uri))
-  (def trusted-workspaces
-    (or (get-in params ["initializationOptions" "trustedWorkspaces"])
-        (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
-        @[]))
   (def trusted (and root-uri root-path (has-value? trusted-workspaces root-uri)))
   (var workspace-env (make-env root-env))
   (def unique-paths
@@ -318,6 +326,43 @@
     :env workspace-env
     :unique-paths unique-paths})
 
+(defn initialization-workspace-uris [params]
+  (def folders (get params "workspaceFolders"))
+  (cond
+    (indexed? folders) (map |(get $ "uri") folders)
+    (get params "rootUri") [(get params "rootUri")]
+    (get params "rootPath") [(uri/path->file-uri (get params "rootPath"))]
+    @[]))
+
+(defn trust-requests [state workspaces]
+  (def requests @[])
+  (each workspace workspaces
+    (when (and (not (workspace :trusted))
+               (not (workspace :trust-prompted))
+               (workspace :path))
+      (put workspace :trust-prompted true)
+      (def id (string "janet-lsp/workspaceTrust/" (hash (workspace :uri))))
+      (put-in state [:pending-requests id]
+              {:kind :workspace-trust :uri (workspace :uri)})
+      (array/push requests
+                  {:id id
+                   :method "window/showMessageRequest"
+                   :params {:type 2
+                            :message (string "Trust Janet workspace " (workspace :path)
+                                             "? Trusted analysis can execute workspace code.")
+                            :actions [{:title "Trust for This Session"}
+                                      {:title "Keep Restricted"}]}})))
+  requests)
+
+(defn reanalyze-open-documents [state]
+  (each document (values (state :documents))
+    (def workspace (document-workspace state document))
+    (def [_ env]
+      (run-diagnostics (document :path) (document :content)
+                       (state :position-encoding) workspace))
+    (put document :eval-env env))
+  state)
+
 (defn on-initialize
   `` 
   Called by the LSP client to recieve a list of capabilities
@@ -329,7 +374,15 @@
   (def position-encodings (get-in params ["capabilities" "general" "positionEncodings"] @[]))
   (def position-encoding (if (has-value? position-encodings "utf-8") "utf-8" "utf-16"))
   (put state :position-encoding position-encoding)
-  (put state :workspace (configure-workspace params))
+  (def trusted-workspaces
+    (or (get-in params ["initializationOptions" "trustedWorkspaces"])
+        (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
+        @[]))
+  (put state :trusted-workspaces (array ;trusted-workspaces))
+  (each root-uri (initialization-workspace-uris params)
+    (when (uri/file-uri->path root-uri)
+      (put-in state [:workspaces root-uri]
+              (configure-workspace root-uri trusted-workspaces))))
   (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
     (setdyn :push-diagnostics false)
     (setdyn :push-diagnostics true))
@@ -344,33 +397,41 @@
                                 :hoverProvider true
                                 :signatureHelpProvider {:triggerCharacters [" "]}
                                 :documentFormattingProvider true
-                                :definitionProvider true}
+                                :definitionProvider true
+                                :workspace {:workspaceFolders
+                                            {:supported true
+                                             :changeNotifications true}}}
                  :serverInfo {:name "janet-lsp"
                               :version version
                               :commit commit}}]
     (logging/message message [:initialize])
     [:ok state message]))
 
-(def trust-request-id "janet-lsp/workspaceTrust")
-
 (defn on-initialized [state]
-  (def workspace (state :workspace))
-  (if (or (workspace :trusted)
-          (workspace :trust-prompted)
-          (nil? (workspace :path)))
+  (def requests (trust-requests state (values (state :workspaces))))
+  (if (empty? requests)
     [:noresponse state]
-    (do
-      (put workspace :trust-prompted true)
-      (put-in state [:pending-requests trust-request-id]
-              {:kind :workspace-trust :uri (workspace :uri)})
-      [:request state
-       {:id trust-request-id
-        :method "window/showMessageRequest"
-        :params {:type 2
-                 :message (string "Trust Janet workspace " (workspace :path)
-                                  "? Trusted analysis can execute workspace code.")
-                 :actions [{:title "Trust for This Session"}
-                           {:title "Keep Restricted"}]}}])))
+    [:requests state requests]))
+
+(defn on-workspace-folders-changed [state params]
+  (each folder (get-in params ["event" "removed"] @[])
+    (def root-uri (get folder "uri"))
+    (put (state :workspaces) root-uri nil)
+    (eachp [id pending] (state :pending-requests)
+      (when (= root-uri (pending :uri))
+        (put (state :pending-requests) id nil))))
+  (def added @[])
+  (each folder (get-in params ["event" "added"] @[])
+    (def root-uri (get folder "uri"))
+    (when (uri/file-uri->path root-uri)
+      (def workspace (configure-workspace root-uri (state :trusted-workspaces)))
+      (put-in state [:workspaces root-uri] workspace)
+      (array/push added workspace)))
+  (reanalyze-open-documents state)
+  (def requests (trust-requests state added))
+  (if (empty? requests)
+    [:noresponse state]
+    [:requests state requests]))
 
 (defn handle-client-response [message state]
   (def id (get message "id"))
@@ -380,10 +441,12 @@
     (when (and (= :workspace-trust (pending :kind))
                (= "Trust for This Session" (get-in message ["result" "title"])))
       (def root-uri (pending :uri))
-      (put state :workspace
-           (configure-workspace
-             {"rootUri" root-uri
-              "initializationOptions" {"trustedWorkspaces" [root-uri]}}))))
+      (when (get-in state [:workspaces root-uri])
+        (unless (has-value? (state :trusted-workspaces) root-uri)
+          (array/push (state :trusted-workspaces) root-uri))
+        (put-in state [:workspaces root-uri]
+                (configure-workspace root-uri (state :trusted-workspaces)))
+        (reanalyze-open-documents state))))
   state)
 
 (defn on-shutdown
@@ -544,6 +607,7 @@
       # "textDocument/references" (on-document-references state params) TODO: Implement this? See src/lsp/api.ts:103
       # "textDocument/documentSymbol" (on-document-symbols state params) TODO: Implement this? See src/lsp/api.ts:121
       "textDocument/definition" (on-document-definition state params)
+      "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "janet/serverInfo" (on-janet-serverinfo state params)
       "janet/tellJoke" (on-janet-tell-joke state params)
       "enableDebug" (on-enable-debug state params)
@@ -636,6 +700,15 @@
                                        (request :params)))
           new-state)
 
+        [:requests new-state requests]
+        (do
+          (each request requests
+            (write-response stdout
+                            (rpc/request (request :id)
+                                         (request :method)
+                                         (request :params))))
+          new-state)
+
         [:noresponse new-state] new-state
 
         [:method-not-found new-state]
@@ -683,9 +756,13 @@
                          :lifecycle :uninitialized
                          :position-encoding "utf-16"
                          :pending-requests @{}
-                         :workspace @{:trusted false
-                                      :env root-env
-                                      :unique-paths @[]}}))
+                         :trusted-workspaces @[]
+                         :workspaces @{}
+                         :standalone-workspace @{:uri nil
+                                                 :path nil
+                                                 :trusted false
+                                                 :env (make-env root-env)
+                                                 :unique-paths @[]}}))
 
 (defn start-debug-console []
   (def host "127.0.0.1")

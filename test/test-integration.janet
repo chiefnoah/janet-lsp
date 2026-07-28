@@ -1,5 +1,6 @@
 (import spork/json)
 (import spork/path)
+(import ../src/uri)
 
 (use judge)
 
@@ -61,6 +62,13 @@
 
 (defn respond [cursor id result]
   (write-output cursor {:jsonrpc "2.0" :id id :result result}))
+
+(defn completion-labels [cursor id document-uri line character]
+  (def response
+    (request cursor id "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line line :character character}}))
+  (map |($ :label) (get-in response [:result :items])))
 
 (defn spawn-lsp []
   (def janet-lsp
@@ -212,13 +220,98 @@
   (os/rmdir config-dir)
   (os/rmdir workspace))
 
+(deftest "scope analysis across workspace folder changes"
+  (def base (string "/tmp/janet-lsp-workspaces-" (os/getpid)))
+  (def root-a (path/join base "a"))
+  (def root-b (path/join base "b"))
+  (def root-c (path/join base "c"))
+  (each root [base root-a root-b root-c]
+    (os/mkdir root))
+  (each root [root-a root-b root-c]
+    (os/mkdir (path/join root ".janet-lsp")))
+  (spit (path/join root-a ".janet-lsp" "startup.janet") "(def workspace-a 1)\n")
+  (spit (path/join root-b ".janet-lsp" "startup.janet") "(def workspace-b 1)\n")
+  (def marker (path/join root-c "startup-ran"))
+  (spit (path/join root-c ".janet-lsp" "startup.janet")
+        (string "(spit " (string/format "%q" marker) " \"ran\")\n"
+                "(def workspace-c 1)\n"))
+  (def file-a (path/join root-a "main.janet"))
+  (def file-b (path/join root-b "main.janet"))
+  (spit file-a "(workspace-a)\n")
+  (spit file-b "(workspace-b)\n")
+  (def uri-a (uri/path->file-uri root-a))
+  (def uri-b (uri/path->file-uri root-b))
+  (def uri-c (uri/path->file-uri root-c))
+  (def file-uri-a (uri/path->file-uri file-a))
+  (def file-uri-b (uri/path->file-uri file-b))
+
+  (def cursor (spawn-lsp))
+  (def initialize
+    (request cursor 60 "initialize"
+             {:rootUri nil
+              :workspaceFolders [{:uri uri-a :name "a"}
+                                 {:uri uri-b :name "b"}]
+              :capabilities {:textDocument {:diagnostic {}}}
+              :initializationOptions {:trustedWorkspaces [uri-a uri-b]}}))
+  (test (get-in initialize [:result :capabilities :workspace :workspaceFolders :supported])
+        true)
+  (notify cursor "initialized")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri file-uri-a :languageId "janet"
+                          :version 1 :text "(workspace-a)\n"}})
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri file-uri-b :languageId "janet"
+                          :version 1 :text "(workspace-b)\n"}})
+
+  (def labels-a (completion-labels cursor 61 file-uri-a 0 5))
+  (def labels-b (completion-labels cursor 62 file-uri-b 0 5))
+  (test (has-value? labels-a "workspace-a") true)
+  (test (has-value? labels-a "workspace-b") false)
+  (test (has-value? labels-b "workspace-b") true)
+  (test (has-value? labels-b "workspace-a") false)
+
+  (def standalone-uri (uri/path->file-uri (path/join base "standalone.janet")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri standalone-uri :languageId "janet"
+                          :version 1 :text "string\n"}})
+  (def standalone-labels (completion-labels cursor 63 standalone-uri 0 3))
+  (test (has-value? standalone-labels "string") true)
+  (test (has-value? standalone-labels "workspace-a") false)
+  (test (has-value? standalone-labels "workspace-b") false)
+
+  (notify cursor "workspace/didChangeWorkspaceFolders"
+          {:event {:added [] :removed [{:uri uri-a :name "a"}]}})
+  (test (has-value? (completion-labels cursor 64 file-uri-a 0 5) "workspace-a") false)
+  (notify cursor "workspace/didChangeWorkspaceFolders"
+          {:event {:added [{:uri uri-a :name "a"}] :removed []}})
+  (test (has-value? (completion-labels cursor 65 file-uri-a 0 5) "workspace-a") true)
+
+  (notify cursor "workspace/didChangeWorkspaceFolders"
+          {:event {:added [{:uri uri-c :name "c"}] :removed []}})
+  (def prompt (read-output cursor))
+  (test (string/has-prefix? "janet-lsp/workspaceTrust/" (get-in prompt [:id])) true)
+  (respond cursor (get-in prompt [:id]) {:title "Keep Restricted"})
+  (request cursor 66 "janet/serverInfo")
+  (test (os/stat marker) nil)
+
+  (exit-lsp cursor)
+  (each file [file-a file-b
+              (path/join root-a ".janet-lsp" "startup.janet")
+              (path/join root-b ".janet-lsp" "startup.janet")
+              (path/join root-c ".janet-lsp" "startup.janet")]
+    (os/rm file))
+  (each root [root-a root-b root-c]
+    (os/rmdir (path/join root ".janet-lsp"))
+    (os/rmdir root))
+  (os/rmdir base))
+
 (deftest: with-process "reject duplicate initialize and initialized requests" [cursor]
   (test (get-in (request cursor 33 "initialize" {:capabilities {}}) [:error :code])
         -32600)
   (test (get-in (request cursor 34 "initialized") [:error :code]) -32600)
   (notify cursor "initialized")
   (def prompt (read-output cursor))
-  (test (get-in prompt [:id]) "janet-lsp/workspaceTrust")
+  (test (string/has-prefix? "janet-lsp/workspaceTrust/" (get-in prompt [:id])) true)
   (respond cursor (get-in prompt [:id]) {:title "Keep Restricted"})
   (def response (request cursor 35 "janet/serverInfo"))
   (test (get-in response [:error :code]) nil)

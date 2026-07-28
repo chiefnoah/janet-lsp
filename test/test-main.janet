@@ -184,7 +184,30 @@
                [(path/join (os/cwd) "src/main.janet")
                 (path/join (os/cwd) "src/parser.janet")
                 (path/join (os/cwd) "example/init.janet")]))
-  (test paths
-        @["./src/:all:.janet"
-          "./example/:all:.janet"
-          "./example/init.janet"]))
+  (test (map |(path/relpath (os/cwd) $) paths)
+        @["src/:all:.janet"
+          "example/:all:.janet"
+          "example/init.janet"]))
+
+(deftest "select the most specific owning workspace"
+  (def root (path/join (os/cwd) "workspace"))
+  (def nested (path/join root "nested"))
+  (def state {:workspaces {"root" {:uri "root" :path root}
+                           "nested" {:uri "nested" :path nested}}
+              :standalone-workspace {:uri "standalone" :path nil}})
+  (test (get (main/workspace-for-path state (path/join nested "main.janet")) :uri)
+        "nested")
+  (test (get (main/workspace-for-path state (path/join root "main.janet")) :uri)
+        "root")
+  (test (get (main/workspace-for-path state (path/join (os/cwd) "other" "main.janet")) :uri)
+        "standalone"))
+
+(deftest "derive initialization workspace roots"
+  (test (main/initialization-workspace-uris
+          {"rootUri" "file:///root"
+           "workspaceFolders" [{"uri" "file:///a"} {"uri" "file:///b"}]})
+        @["file:///a" "file:///b"])
+  (test (main/initialization-workspace-uris {"rootUri" "file:///root"})
+        ["file:///root"])
+  (test (first (main/initialization-workspace-uris {"rootPath" "/tmp/root"}))
+        "file:///tmp/root"))

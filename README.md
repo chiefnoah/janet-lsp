@@ -87,6 +87,20 @@ safe mode. Dismissing the prompt keeps the workspace restricted. Clients can
 use `trustedWorkspaces` for persistent user-approved trust and should not derive
 that list from workspace configuration files.
 
+### Workspace Folders
+
+Janet LSP uses the client's `workspaceFolders` from initialization, falling
+back to `rootUri` and then legacy `rootPath`. The server process does not need
+to be launched from a workspace directory. Folder add/remove notifications are
+applied immediately, and nested workspaces own files under the most specific
+matching root. Analysis environments, module discovery, startup files, and
+trust are isolated per root.
+
+An open document outside all configured file workspaces is treated as a
+standalone file. It retains parsing, core documentation, hover, signature, and
+local completion features, but remains restricted and does not inherit module
+paths, startup configuration, or trust from another workspace.
+
 ## Getting Started (for Development)
 
 ### Clone this project and Build the stand-alone binary and .jimage file
