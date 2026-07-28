@@ -98,6 +98,20 @@
        :active-parameter (max 0 (- forms 2))
        :range [start cursor]})))
 
+(defn enclosing-call-heads [location source]
+  (def cursor (to-index location source))
+  (def masked (structure-mask source))
+  (def bytes (string/bytes masked))
+  (def stack @[])
+  (for i 0 (min cursor (length bytes))
+    (case (bytes i)
+      40 (array/push stack i)
+      41 (when (not (empty? stack)) (array/pop stack))))
+  (map (fn [start]
+         (first (peg/match '(* "(" :s* (<- (some (if-not (+ :s (set "()[]{}")) 1))))
+                           (string/slice masked start))))
+       stack))
+
 (def word-peg
   (peg/compile
     ~{:s (set " \t\0\f\v") :s* (any :s) :s+ (some :s)

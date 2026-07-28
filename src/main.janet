@@ -522,6 +522,7 @@
                                 :definitionProvider true
                                 :documentSymbolProvider true
                                 :workspaceSymbolProvider true
+                                :referencesProvider true
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -704,6 +705,67 @@
                                            (state :position-encoding))}})))))
   [:ok state symbols])
 
+(defn- same-position? [a b]
+  (and (= (a :line) (b :line)) (= (a :character) (b :character))))
+
+(defn on-references [state params]
+  (def document-uri (get-in params ["textDocument" "uri"]))
+  (def document (get-in state [:documents document-uri]))
+  (def content (document :content))
+  (def location (request-byte-position state params content))
+  (def name ((lookup/word-at location content) :word))
+  (cond
+    (empty? name)
+    [:ok state @[]]
+    (let [workspace (document-workspace state document)
+          local-definition (parser/definition-at location content name)
+          include-declaration (not= false (get-in params ["context" "includeDeclaration"]))
+          locations @[]]
+      (if local-definition
+        (each reference (parser/references-for name content)
+          (def reference-start (get-in reference [:range :start]))
+          (def resolved (parser/definition-at reference-start content name))
+          (when (or (same-position? reference-start
+                                    (get-in local-definition [:range :start]))
+                    (and resolved
+                         (same-position? (get-in resolved [:range :start])
+                                         (get-in local-definition [:range :start]))))
+            (array/push locations {:uri document-uri :range (reference :range)})))
+        (each record (values (workspace :index))
+          (each reference (record :references)
+            (when (or (= name (reference :name))
+                      (string/has-suffix? (string "/" name) (reference :name)))
+              (array/push locations {:uri (reference :uri) :range (reference :range)})))))
+      (when (not include-declaration)
+        (def indexed-definition
+          (and (not local-definition)
+               (first (index/definitions workspace (last (string/split "/" name))))))
+        (def definition-position
+          (or (and local-definition (get-in local-definition [:range :start]))
+              (get-in indexed-definition [:selection-range :start])))
+        (def definition-uri (if local-definition document-uri
+                              (and indexed-definition (indexed-definition :uri))))
+        (when definition-position
+          (var i (length locations))
+          (while (> i 0)
+            (-= i 1)
+            (when (and (= definition-uri (get-in locations [i :uri]))
+                       (same-position? definition-position
+                                       (get-in (locations i) [:range :start])))
+              (array/remove locations i)))))
+      (def converted @[])
+      (each found locations
+        (def target-uri (found :uri))
+        (def target-path (uri/file-uri->path target-uri))
+        (def target-content (or (get-in state [:documents target-uri :content])
+                                (and target-path (os/stat target-path) (slurp target-path))))
+        (when target-content
+          (array/push converted
+                      {:uri target-uri
+                       :range (indexed-range->lsp target-content (found :range)
+                                                  (state :position-encoding))})))
+      [:ok state (distinct converted)])))
+
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
@@ -765,13 +827,15 @@
    "textDocument/hover" true
    "textDocument/signatureHelp" true
    "textDocument/definition" true
+   "textDocument/references" true
    "textDocument/documentSymbol" true})
 
 (def position-request-methods
   {"textDocument/completion" true
    "textDocument/hover" true
    "textDocument/signatureHelp" true
-   "textDocument/definition" true})
+   "textDocument/definition" true
+   "textDocument/references" true})
 
 (defn handle-message [message state]
   (let [id (get message "id")
@@ -801,6 +865,7 @@
       "textDocument/definition" (on-document-definition state params)
       "textDocument/documentSymbol" (on-document-symbols state params)
       "workspace/symbol" (on-workspace-symbols state params)
+      "textDocument/references" (on-references state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)

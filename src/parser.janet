@@ -309,7 +309,10 @@
                        (and (= (get-in range [:end :line]) (loc :line))
                             (< (get-in range [:end :character]) (loc :character)))))
                 (references-for name source)))
-      (when-let [candidate (last candidates)]
+      (def lexical-scope?
+        (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-" "defmacro"] $)
+                   (lookup/enclosing-call-heads loc source))))
+      (when-let [candidate ((if lexical-scope? last first) candidates)]
         {:name name :range (candidate :range)}))
     ([_] nil)))
 

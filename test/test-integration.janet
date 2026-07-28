@@ -693,6 +693,36 @@
         true)
   (exit-lsp cursor))
 
+(deftest "find references without conflating shadows"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source "(def value 1)\nvalue\n(let [value 2] value)\nvalue\n")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1 :text source}})
+  (def outer
+    (request cursor 110 "textDocument/references"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 2}
+              :context {:includeDeclaration false}}))
+  (test (map |(get-in $ [:range :start :line]) (get-in outer [:result])) @[1 3])
+  (def inner
+    (request cursor 111 "textDocument/references"
+             {:textDocument {:uri document-uri}
+              :position {:line 2 :character 18}
+              :context {:includeDeclaration true}}))
+  (test (map |(get-in $ [:range :start :line]) (get-in inner [:result])) @[2 2])
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2
+                          }
+           :contentChanges [{:text "(def value 1)\nvalue\n"}]})
+  (def updated
+    (request cursor 112 "textDocument/references"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 2}
+              :context {:includeDeclaration true}}))
+  (test (length (get-in updated [:result])) 2)
+  (exit-lsp cursor))
+
 (deftest "track active signature parameters across encodings"
   (each encoding ["utf-16" "utf-8"]
     (def capabilities
