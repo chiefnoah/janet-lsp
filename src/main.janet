@@ -520,6 +520,8 @@
                                                         :retriggerCharacters [" "]}
                                 :documentFormattingProvider true
                                 :definitionProvider true
+                                :documentSymbolProvider true
+                                :workspaceSymbolProvider true
                                 :workspace {:workspaceFolders
                                             {:supported true
                                              :changeNotifications true}}}
@@ -658,6 +660,50 @@
 
       [:ok state :null])))
 
+(defn- indexed-range->lsp [source range encoding]
+  {:start (position/byte->lsp-position source (range :start) encoding)
+   :end (position/byte->lsp-position source (range :end) encoding)})
+
+(defn on-document-symbols [state params]
+  (def document-uri (get-in params ["textDocument" "uri"]))
+  (def document (get-in state [:documents document-uri]))
+  (if (nil? document)
+    [:ok state @[]]
+    (let [record (index/analyze document-uri (document :content))
+          encoding (state :position-encoding)
+          symbols
+          (map (fn [definition]
+                 {:name (definition :name) :kind (definition :kind)
+                  :range (indexed-range->lsp (document :content) (definition :range) encoding)
+                  :selectionRange (indexed-range->lsp (document :content)
+                                                       (definition :selection-range) encoding)
+                  :children (map |{:name ($ :name) :kind ($ :kind)
+                                   :range (indexed-range->lsp (document :content) ($ :range) encoding)
+                                   :selectionRange (indexed-range->lsp
+                                                     (document :content) ($ :selection-range) encoding)}
+                                 (definition :children))})
+               (record :definitions))]
+      [:ok state symbols])))
+
+(defn on-workspace-symbols [state params]
+  (def query (string/ascii-lower (or (get params "query") "")))
+  (def symbols @[])
+  (each workspace (values (state :workspaces))
+    (each definition (index/definitions workspace)
+      (when (string/find query (string/ascii-lower (definition :name)))
+        (def target-uri (definition :uri))
+        (def target-path (uri/file-uri->path target-uri))
+        (def content (or (get-in state [:documents target-uri :content])
+                         (and target-path (os/stat target-path) (slurp target-path))))
+        (when content
+          (array/push symbols
+                      {:name (definition :name) :kind (definition :kind)
+                       :location {:uri target-uri
+                                  :range (indexed-range->lsp
+                                           content (definition :selection-range)
+                                           (state :position-encoding))}})))))
+  [:ok state symbols])
+
 (defn on-set-trace [state params]
   (logging/info (string/format "on-set-trace: %m" params) [:settrace])
   (case (get params "value")
@@ -718,7 +764,8 @@
    "textDocument/formatting" true
    "textDocument/hover" true
    "textDocument/signatureHelp" true
-   "textDocument/definition" true})
+   "textDocument/definition" true
+   "textDocument/documentSymbol" true})
 
 (def position-request-methods
   {"textDocument/completion" true
@@ -752,6 +799,8 @@
       # "textDocument/references" (on-document-references state params) TODO: Implement this? See src/lsp/api.ts:103
       # "textDocument/documentSymbol" (on-document-symbols state params) TODO: Implement this? See src/lsp/api.ts:121
       "textDocument/definition" (on-document-definition state params)
+      "textDocument/documentSymbol" (on-document-symbols state params)
+      "workspace/symbol" (on-workspace-symbols state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
       "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
       "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)

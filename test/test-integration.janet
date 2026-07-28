@@ -669,6 +669,30 @@
         :null)
   (exit-lsp cursor))
 
+(deftest "return document and workspace symbols"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def second-uri (uri/path->file-uri
+                    (path/abspath "test/resources/format-file-before.txt")))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1
+                          :text "(defn shared [x y] (+ x y))\n(def value 1)\n"}})
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri second-uri :languageId "janet" :version 1
+                          :text "(defn shared [other] other)\n"}})
+  (def document-symbols
+    (request cursor 108 "textDocument/documentSymbol"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in document-symbols [:result 0 :name]) "shared")
+  (test (get-in document-symbols [:result 0 :children 0 :name]) "x")
+  (test (get-in document-symbols [:result 0 :children 1 :name]) "y")
+  (test (get-in document-symbols [:result 1 :name]) "value")
+  (def workspace-symbols (request cursor 109 "workspace/symbol" {:query "sha"}))
+  (test (length (get-in workspace-symbols [:result])) 2)
+  (test (not= (get-in workspace-symbols [:result 0 :location :uri])
+              (get-in workspace-symbols [:result 1 :location :uri]))
+        true)
+  (exit-lsp cursor))
+
 (deftest "track active signature parameters across encodings"
   (each encoding ["utf-16" "utf-8"]
     (def capabilities

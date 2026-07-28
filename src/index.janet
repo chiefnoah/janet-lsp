@@ -15,11 +15,28 @@
                               :range {:start {:line line-number :character (token 0)}
                                       :end {:line line-number :character (token 2)}}}))
     (when (and (>= (length tokens) 2) (has-value? definition-heads ((tokens 0) 1)))
+      (def head ((tokens 0) 1))
       (def token (tokens 1))
+      (def parameter-open (string/find "[" line))
+      (def parameter-close (and parameter-open (string/find "]" line parameter-open)))
+      (def parameter-tokens
+        (if (and (string/has-prefix? "defn" head) parameter-close)
+          (filter |(and (> ($ 0) parameter-open) (<= ($ 2) parameter-close)
+                        (not (has-value? ["&" "_"] ($ 1))))
+                  (array/slice tokens 2))
+          @[]))
       (array/push definitions {:name (token 1) :uri document-uri
-                               :kind (if (string/has-prefix? "defn" ((tokens 0) 1)) 12 13)
-                               :range {:start {:line line-number :character (token 0)}
-                                       :end {:line line-number :character (token 2)}}})))
+                               :kind (if (string/has-prefix? "defn" head) 12 13)
+                               :range {:start {:line line-number :character 0}
+                                       :end {:line line-number :character (length line)}}
+                               :selection-range {:start {:line line-number :character (token 0)}
+                                                 :end {:line line-number :character (token 2)}}
+                               :children (map |{:name ($ 1) :kind 13
+                                                :range {:start {:line line-number :character ($ 0)}
+                                                        :end {:line line-number :character ($ 2)}}
+                                                :selection-range {:start {:line line-number :character ($ 0)}
+                                                                  :end {:line line-number :character ($ 2)}}}
+                                              parameter-tokens)})))
   {:uri document-uri :definitions definitions :references references})
 
 (defn update [workspace document-uri content]
