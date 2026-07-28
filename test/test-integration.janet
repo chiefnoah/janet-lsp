@@ -1116,6 +1116,58 @@
   (when (os/stat cache-path) (os/rm cache-path))
   (remove-tree root))
 
+(deftest "invalidate dependent diagnostics after open module changes"
+  (def root (temp-directory "janet-lsp-diagnostic-dependencies"))
+  (def module-path (path/join root "module.janet"))
+  (def main-path (path/join root "main.janet"))
+  (def module-source "(def exported 1)\n")
+  (def main-source "(use ./module :only [exported])\nexported\n")
+  (spit module-path module-source)
+  (spit main-path main-source)
+  (def root-uri (uri/path->file-uri root))
+  (def module-uri (uri/path->file-uri module-path))
+  (def main-uri (uri/path->file-uri main-path))
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 163 "initialize"
+           {:rootUri root-uri
+            :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document cursor module-uri module-source)
+  (open-text-document cursor main-uri main-source)
+  (def initial
+    (request cursor 164 "textDocument/diagnostic"
+             {:textDocument {:uri main-uri}}))
+  (test (get-in initial [:result :items]) @[])
+  (change-text-document cursor module-uri "(def replacement 1)\n" 2)
+  (def changed
+    (request cursor 165 "textDocument/diagnostic"
+             {:textDocument {:uri main-uri}
+              :previousResultId (get-in initial [:result :resultId])}))
+  (test (get-in changed [:result :kind]) "full")
+  (test (get-in changed [:result :items 0 :code])
+        "janet.lint.undefined-symbol")
+  (test (get-in changed [:result :items 0 :message]) "undefined symbol exported")
+  (exit-lsp cursor)
+
+  (def pushed (spawn-lsp))
+  (request pushed 166 "initialize" {:rootUri root-uri :capabilities {}})
+  (open-text-document pushed module-uri module-source)
+  (read-output pushed)
+  (open-text-document pushed main-uri main-source)
+  (read-output pushed)
+  (change-text-document pushed module-uri "(def replacement 1)\n" 2)
+  (def module-published (read-output pushed))
+  (def dependent-published (read-output pushed))
+  (test (= (get-in module-published [:params :uri]) module-uri) true)
+  (test (= (get-in dependent-published [:params :uri]) main-uri) true)
+  (test (get-in dependent-published [:params :diagnostics 0 :code])
+        "janet.lint.undefined-symbol")
+  (exit-lsp pushed)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
+
 (deftest: with-process "push diagnostics report zero-based parse positions" [cursor]
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri document-uri :languageId "janet"

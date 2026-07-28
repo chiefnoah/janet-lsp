@@ -8,13 +8,11 @@
 (import ./uri)
 
 (defn- publish [state document diagnostics &opt version]
-  (def message {:method "textDocument/publishDiagnostics"
-                :params (if version
-                          {:uri (document :uri)
-                           :version version
-                           :diagnostics diagnostics}
-                          {:uri (document :uri)
-                           :diagnostics diagnostics})})
+  (def message
+    {:method "textDocument/publishDiagnostics"
+     :params (if version
+               {:uri (document :uri) :version version :diagnostics diagnostics}
+               {:uri (document :uri) :diagnostics diagnostics})})
   (logging/message message [:diagnostics])
   [:ok state message :notify true])
 
@@ -64,6 +62,25 @@
 (defn- refresh [state document workspace]
   (analysis/refresh document workspace (state :position-encoding)))
 
+(defn- diagnostic-message [document snapshot &opt diagnostics]
+  {:method "textDocument/publishDiagnostics"
+   :params {:uri (document :uri)
+            :version (document :version)
+            :diagnostics (or diagnostics (snapshot :diagnostics))}})
+
+(defn- push-with-dependents [state document workspace snapshot &opt diagnostics]
+  (def notifications @[(diagnostic-message document snapshot diagnostics)])
+  (each dependent (values (state :documents))
+    (when (and (not= dependent document)
+               (= workspace (server-utils/document-workspace state dependent)))
+      (def previous (get-in dependent [:analysis :diagnostics]))
+      (def current
+        (or (analysis/current dependent workspace)
+            (refresh state dependent workspace)))
+      (unless (deep= previous (current :diagnostics))
+        (array/push notifications (diagnostic-message dependent current)))))
+  [:notifications state notifications])
+
 (defn- resynchronizing-changes [changes]
   (when (indexed? changes)
     (var replacement nil)
@@ -98,7 +115,7 @@
                                   :desynchronized false})
             (def snapshot (refresh state document workspace))
             (if (dyn :push-diagnostics)
-              (publish state document (snapshot :diagnostics) version)
+              (push-with-dependents state document workspace snapshot)
               [:noresponse state])))))))
 
 (defn on-close [state params]
@@ -106,11 +123,10 @@
     (do
       (def workspace (server-utils/document-workspace state document))
       (put (state :documents) (server-utils/document-uri params) nil)
-      (if-let [record (get-in workspace [:disk-index (document :uri)])]
-        (index/update-record workspace (document :uri) record)
-        (index/remove workspace (document :uri)))
+      (analysis/replace-record workspace (document :uri)
+                               (get-in workspace [:disk-index (document :uri)]))
       (if (dyn :push-diagnostics)
-        (publish state document @[])
+        (push-with-dependents state document workspace (document :analysis) @[])
         [:noresponse state]))
     [:noresponse state]))
 
@@ -215,5 +231,5 @@
     (put (state :documents) document-uri document)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
-      (publish state document (snapshot :diagnostics) version)
+      (push-with-dependents state document workspace snapshot)
       [:noresponse state])))

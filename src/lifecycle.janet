@@ -23,6 +23,7 @@
                             :trusted false
                             :diagnostic-settings diagnostic-settings
                             :diagnostic-generation 0
+                            :index-generation 0
                             :index @{}
                             :exclusions index/default-exclusions
                             :env (make-env root-env)

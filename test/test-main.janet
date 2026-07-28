@@ -314,7 +314,32 @@
   (def sequential-tree (parser/syntax-tree sequential-source))
   (def sequential-record
     (index/analyze "file:///sequential.janet" sequential-source sequential-tree))
-  (test (static-diagnostics/analyze sequential-source sequential-tree sequential-record
+  (test (map |($ :message)
+             (static-diagnostics/analyze sequential-source sequential-tree
+                                         sequential-record @{:index @{}} root-env))
+        @[])
+  (def earlier-source "(let [x 1 y (fn [x] x)] y)\n")
+  (def earlier-tree (parser/syntax-tree earlier-source))
+  (def earlier-record
+    (index/analyze "file:///earlier.janet" earlier-source earlier-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze earlier-source earlier-tree earlier-record
+                                         @{:index @{}} root-env))
+        @["binding x shadows an existing binding"])
+  (def destructured-source "(let [[a b] [1 2] c (fn [a] a)] c)\n")
+  (def destructured-tree (parser/syntax-tree destructured-source))
+  (def destructured-record
+    (index/analyze "file:///destructured.janet" destructured-source
+                   destructured-tree))
+  (test (map |($ :message)
+             (static-diagnostics/analyze
+               destructured-source destructured-tree destructured-record
+               @{:index @{}} root-env))
+        @["binding a shadows an existing binding"])
+  (def loop-source "(defn run [xs] (loop [x :in xs] x))\n")
+  (def loop-tree (parser/syntax-tree loop-source))
+  (def loop-record (index/analyze "file:///loop.janet" loop-source loop-tree))
+  (test (static-diagnostics/analyze loop-source loop-tree loop-record
                                     @{:index @{}} root-env)
         @[]))
 
@@ -325,6 +350,7 @@
   (def source
     (string "(import ./module :as module)\n"
             "(module/exported)\n"
+            "(module/missing)\n"
             "# janet-lsp: ignore-next-line undefinedSymbol\n"
             "ignored-name\n"
             "# janet-lsp: disable constantCondition\n"
@@ -335,7 +361,9 @@
     (static-diagnostics/analyze
       source tree record @{:index @{module-uri module-record}} root-env))
   (def visible (configuration/suppress raw source))
-  (test (has-value? (map |($ :code) visible) "janet.lint.undefined-symbol") false)
+  (test (map |($ :message)
+             (filter |(= "janet.lint.undefined-symbol" ($ :code)) visible))
+        @["undefined symbol module/missing"])
   (test (has-value? (map |($ :code) visible) "janet.lint.constant-condition") false)
   (def settings
     (configuration/diagnostics

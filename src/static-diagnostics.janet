@@ -84,11 +84,28 @@
               local (copy-set outer)
               introduced @{}]
           (cond
-            (has-value? [:let :loop] (node :tag))
+            (= :loop (node :tag)) nil
+
+            (= :let (node :tag))
             (do
-              (each child children
-                (when (= :expr (get child :tag)) (visit child outer)))
-              (each binding binders (introduce binding outer local introduced))
+              (def parameters
+                (get-in (first (filter |(= :parameters (get $ :tag)) children))
+                        [:value] @[]))
+              (def expressions
+                (get-in (first (filter |(= :expr (get $ :tag)) children))
+                        [:value] @[]))
+              (var parameter-index 0)
+              (each expression expressions
+                (visit expression local)
+                (while (and (< parameter-index (length parameters))
+                            (< (get-in parameters [parameter-index :index])
+                               (expression :index)))
+                  (introduce (parameters parameter-index)
+                             outer local introduced)
+                  (+= parameter-index 1)))
+              (while (< parameter-index (length parameters))
+                (introduce (parameters parameter-index) outer local introduced)
+                (+= parameter-index 1))
               (each child children
                 (unless (has-value? [:parameters :expr] (get child :tag))
                   (visit child local))))
@@ -153,9 +170,11 @@
       (def first-leaf (and (leaf? first-child) first-child))
       (def quote-form
         (and first-leaf (has-value? ["quote" "quasiquote"] (first-leaf :value))))
-      (when (or quoted quote-form (= :rmform (node :tag)))
+      (when (or quoted quote-form (= :rmform (node :tag)) (= :loop (node :tag)))
         (array/push ranges (node-range node source)))
-      (when (and children (not (or quoted quote-form (= :rmform (node :tag)))))
+      (when (and children
+                 (not (or quoted quote-form (= :rmform (node :tag))
+                          (= :loop (node :tag)))))
         (if (and (= :ptuple (node :tag)) first-leaf
                  (opaque-call? (first-leaf :value) record env
                                (get-in (node-range first-leaf source) [:start])))
@@ -170,16 +189,17 @@
   (if (> (length parts) 1)
     (let [prefix (first parts)
           target-name (last parts)
-          imported (first (filter |(= prefix ($ :alias)) (record :imports)))]
+          imported (first (filter |(= prefix ($ :alias)) (record :imports)))
+          target-uri (and imported
+                          (index/module-uri workspace (record :uri)
+                                            (imported :module)))]
       (cond
         (nil? imported) :undefined
         (and (not (empty? (imported :only)))
              (not (has-value? (imported :only) target-name))) :undefined
-        (when-let [target-uri
-                   (index/module-uri workspace (record :uri) (imported :module))]
-          (if (index/exported-definition workspace target-uri target-name @{})
-            :defined
-            :undefined))
+        target-uri (if (index/exported-definition workspace target-uri target-name @{})
+                     :defined
+                     :undefined)
         :unknown))
     (if (local-definition record name position)
       :defined

@@ -8,6 +8,11 @@
 (defn key [version content]
   (string (if (nil? version) "null" version) ":" (index/content-hash content)))
 
+(defn- diagnostic-result-id [workspace snapshot-key items]
+  (string (workspace :diagnostic-generation) ":"
+          (or (workspace :index-generation) 0) ":" snapshot-key ":"
+          (index/content-hash (string/format "%j" items))))
+
 (defn- semantic-records [record env]
   (def definitions (record :definitions))
   (def records @[])
@@ -56,9 +61,8 @@
      :workspace-uri (workspace :uri)
      :trusted (workspace :trusted)
      :diagnostic-generation (workspace :diagnostic-generation)
-     :diagnostic-result-id
-     (string (workspace :diagnostic-generation) ":" (key version content) ":"
-             (index/content-hash (string/format "%j" items)))
+     :index-generation (or (workspace :index-generation) 0)
+     :diagnostic-result-id (diagnostic-result-id workspace (key version content) items)
      :syntax-tree syntax-tree
      :signatures (signatures/all content)
      :diagnostics items
@@ -74,7 +78,9 @@
              (= (snapshot :workspace-uri) (workspace :uri))
              (= (snapshot :trusted) (workspace :trusted))
              (= (snapshot :diagnostic-generation)
-                (workspace :diagnostic-generation)))
+                (workspace :diagnostic-generation))
+             (= (or (snapshot :index-generation) 0)
+                (or (workspace :index-generation) 0)))
     snapshot))
 
 (defn find-snapshot [document snapshot-key]
@@ -100,10 +106,26 @@
   (put document :snapshot-order @[])
   document)
 
+(defn replace-record [workspace document-uri record]
+  (def previous (get-in workspace [:index document-uri]))
+  (if record
+    (index/update-record workspace document-uri record)
+    (index/remove workspace document-uri))
+  (unless (= (get previous :content-hash) (get record :content-hash))
+    (put workspace :index-generation
+         (inc (or (workspace :index-generation) 0))))
+  (or (workspace :index-generation) 0))
+
 (defn install [document workspace snapshot]
-  (store document snapshot)
-  (index/update-record workspace (document :uri) (snapshot :index))
-  snapshot)
+  (replace-record workspace (document :uri) (snapshot :index))
+  (def installed
+    (merge snapshot
+           {:index-generation (or (workspace :index-generation) 0)
+            :diagnostic-result-id
+            (diagnostic-result-id workspace (snapshot :key)
+                                  (snapshot :diagnostics))}))
+  (store document installed)
+  installed)
 
 (defn refresh [document workspace encoding]
   (install document workspace (build document workspace encoding)))

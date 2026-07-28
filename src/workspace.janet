@@ -312,6 +312,11 @@
     (when (or (nil? workspaces) (has-value? workspaces owner))
       (analysis/invalidate document)
       (analysis/refresh document owner (state :position-encoding))))
+  (each document (values (state :documents))
+    (def owner (server-utils/document-workspace state document))
+    (when (and (or (nil? workspaces) (has-value? workspaces owner))
+               (nil? (analysis/current document owner)))
+      (analysis/refresh document owner (state :position-encoding))))
   state)
 
 (defn on-folders-changed [state params]
@@ -363,6 +368,7 @@
           (put trusted :cache-path (current :cache-path))
           (put trusted :cache-current (current :cache-current))
           (put trusted :exclusions (current :exclusions))
+          (put trusted :index-generation (or (current :index-generation) 0))
           (merge-into current trusted)
           (reanalyze-open-documents state)))
       :diagnostic-refresh nil))
