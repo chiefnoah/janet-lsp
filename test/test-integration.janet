@@ -611,3 +611,43 @@
   (test (string/has-prefix? "cfunction"
                             (get-in response [:result :documentation :value]))
         true))
+
+(deftest "format documents without mutating server state"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source "(def greeting   1)\ngreeting")
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet"
+                          :version 1 :text source}})
+  (def params {:textDocument {:uri document-uri}
+               :options {:tabSize 2 :insertSpaces true
+                         :trimTrailingWhitespace true}})
+  (def first-edit (request cursor 73 "textDocument/formatting" params))
+  (test (get-in first-edit [:result 0 :range :end :line]) 1)
+  (test (get-in first-edit [:result 0 :range :end :character]) 8)
+  (test (get-in first-edit [:result 0 :newText]) "(def greeting 1)\ngreeting\n")
+
+  # A rejected edit leaves the same request and analysis result available.
+  (def repeated-edit (request cursor 74 "textDocument/formatting" params))
+  (test (get-in repeated-edit [:result 0 :newText])
+        "(def greeting 1)\ngreeting\n")
+  (test (has-value? (completion-labels cursor 75 document-uri 1 4) "greeting") true)
+
+  (def formatted (get-in first-edit [:result 0 :newText]))
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text formatted}]})
+  (test (get-in (request cursor 76 "textDocument/formatting" params) [:result]) @[])
+  (test (has-value? (completion-labels cursor 77 document-uri 1 4) "greeting") true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 3}
+           :contentChanges [{:text "(do \"😀\"   string)"}]})
+  (def unicode-edit (request cursor 78 "textDocument/formatting" params))
+  (test (get-in unicode-edit [:result 0 :range :end :character]) 18)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 4}
+           :contentChanges [{:text "("}]})
+  (test (get-in (request cursor 79 "textDocument/formatting" params) [:result]) :null)
+  (test (get-in (request cursor 80 "janet/serverInfo") [:id]) 80)
+  (exit-lsp cursor))

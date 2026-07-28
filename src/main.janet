@@ -151,22 +151,32 @@
 
 (defn on-document-formatting [state params]
   (let [uri (document-key (get-in params ["textDocument" "uri"]))
-        content (get-in state [:documents uri :content])
-        new-content (freeze (fmt/format (string/slice content)))]
+        content (get-in state [:documents uri :content])]
+    # Janet formatting is canonical; LSP indentation options are advisory.
+    (logging/dbg (string/format "formatting options: %m" (get params "options"))
+                 [:formatting])
+    (match (try [:ok (freeze (fmt/format (string/slice content)))]
+             ([err] [:error err]))
+      [:error err]
+      (do
+        (logging/warn (string/format "formatter failed: %s" err) [:formatting])
+        [:ok state :null])
+      [:ok new-content]
+      (do
     (logging/info (string/format "old content: %m" content) [:formatting])
     (logging/info (string/format "new content: %m" new-content) [:formatting])
     (logging/info (string/format "formatting changed something: %m" (not= content new-content)) [:formatting])
     (if (= content new-content)
       (do
         (logging/info "No changes" [:formatting])
-        [:ok state :null])
+        [:ok state @[]])
       (do
         (let [message [{:range {:start {:line 0 :character 0}
                                 :end (position/document-end content
                                                             (state :position-encoding))}
                         :newText new-content}]]
           (logging/message message [:formatting])
-          [:ok state message])))))
+          [:ok state message])))))))
 
 (defn on-document-open [state params]
   (let [content (get-in params ["textDocument" "text"])
