@@ -438,6 +438,15 @@
         "(loop [ index :range [0 10] ] (+= total   ))")
       @[{:kind 12 :label index}])
 
+(deftest "table forms and reusable lexical data"
+  (test (visible-bindings {:line 0 :character 31}
+                          "(let [[a b] [1 2]] @{:a a :b b})")
+        @["a" "b"])
+  (test (length (references-for "value"
+                                "(def value 1) # value\n\"value\" value"))
+        2)
+  (test (get-syms-at-loc {:line 0 :character 3} "(let [") @[]))
+
 (test (get-syms-at-loc
         {:line 0 :character 40}
         "( loop [index :range [0 10] ] (+= total   ))")

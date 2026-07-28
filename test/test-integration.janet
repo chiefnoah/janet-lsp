@@ -524,6 +524,30 @@
   (test (get-in response [:result :contents :kind]) "markdown")
   (test (string/has-prefix? "cfunction" (get-in response [:result :contents :value])) true))
 
+(deftest "hover and definition ignore comments and strings"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri :languageId "janet" :version 1
+                          :text "# string\n\"string\"\nstring\n"}})
+  (eachp [id position] [{:line 0 :character 3} {:line 1 :character 3}]
+    (test (get-in
+            (request cursor (+ 81 id) "textDocument/hover"
+                     {:textDocument {:uri document-uri} :position position})
+            [:result])
+          :null)
+    (test (get-in
+            (request cursor (+ 83 id) "textDocument/definition"
+                     {:textDocument {:uri document-uri} :position position})
+            [:result])
+          :null))
+  (test (get-in
+          (request cursor 85 "textDocument/hover"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 2 :character 3}})
+          [:result :contents :kind])
+        "markdown")
+  (exit-lsp cursor))
+
 (deftest: with-process-open "pull diagnostics returns a full report" [cursor]
   (def response
     (request cursor 3 "textDocument/diagnostic"

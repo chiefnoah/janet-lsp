@@ -4,6 +4,33 @@
 (defn lookup [{:line line :character character} source]
   (string/from-bytes (((string/split "\n" source) line) character)))
 
+(defn code-mask [source]
+  "Replace strings and comments with spaces while preserving byte offsets and newlines."
+  (def bytes (string/bytes source))
+  (def masked @"")
+  (var state :code)
+  (var escaped false)
+  (each byte bytes
+    (case state
+      :comment
+      (if (= byte 10)
+        (do (buffer/push-byte masked byte) (set state :code))
+        (buffer/push-byte masked 32))
+
+      :string
+      (cond
+        (= byte 10) (buffer/push-byte masked byte)
+        escaped (do (buffer/push-byte masked 32) (set escaped false))
+        (= byte 92) (do (buffer/push-byte masked 32) (set escaped true))
+        (= byte 34) (do (buffer/push-byte masked 32) (set state :code))
+        (buffer/push-byte masked 32))
+
+      (cond
+        (= byte 35) (do (buffer/push-byte masked 32) (set state :comment))
+        (= byte 34) (do (buffer/push-byte masked 32) (set state :string))
+        (buffer/push-byte masked byte))))
+  (string masked))
+
 (def word-peg
   (peg/compile
     ~{:s (set " \t\0\f\v") :s* (any :s) :s+ (some :s)
@@ -30,10 +57,13 @@
 
 (defn word-at :tested [location source]
   (let [{:character character-pos :line line-pos} location
-        line ((string/split "\n" source) line-pos)
-        parsed (or (sort-by last (or (peg/match word-peg line) @[[0 "" 0]])))
-        word (or (first-where |(>= ($ 2) character-pos) parsed) (last parsed))]
-    {:range [(word 0) (word 2)] :word (word 1)}))
+        lines (string/split "\n" (code-mask source))]
+    (if (or (< line-pos 0) (>= line-pos (length lines)))
+      {:range [character-pos character-pos] :word ""}
+      (let [line (lines line-pos)
+            parsed (or (sort-by last (or (peg/match word-peg line) @[[0 "" 0]])))
+            word (or (first-where |(>= ($ 2) character-pos) parsed) (last parsed))]
+        {:range [(word 0) (word 2)] :word (word 1)}))))
 
 (def sexp-peg
   (peg/compile
@@ -43,7 +73,7 @@
 (defn sexp-at [location source]
   (let [{:character character-pos :line line-pos} location
         idx (+ character-pos (sum (map (comp inc length) (array/slice (string/split "\n" source) 0 line-pos))))
-        s-exps (or (peg/match sexp-peg source) @[])]
+        s-exps (or (peg/match sexp-peg (code-mask source)) @[])]
     (if-let [sexp-range (last (filter |(< ($ 0) idx ($ 1)) s-exps))]
       {:source (string/slice source ;sexp-range) :range sexp-range}
       {:source "" :range @[line-pos character-pos]})))

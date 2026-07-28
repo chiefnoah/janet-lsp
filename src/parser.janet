@@ -142,11 +142,11 @@
                   ~(group (* "(" (any :ws)
                              "loop" (some :ws)
                              "[" (any :ws)
-                             (/ (group :parameter) ,(tagged-value :parameters)) (any :input)
+                             (/ (group (any :let-binding)) ,(let-parsing))
                              "]"
                              (any :input)
                              ")")))
-               ,(tagged-node :loop))
+               ,(concat-tagged-node :loop))
 
       :ptuple (/ ,(wrap-position-capture
                     ~(group (* "(" (any :input) ")")))
@@ -164,7 +164,7 @@
                     ~(group (* "@[" (any :input) "]")))
                  ,(tagged-node :barray))
       :table (/ ,(wrap-position-capture
-                   ~(group (* "@[" (any :input) "]")))
+                   ~(group (* "@{" (any :input) "}")))
                 ,(tagged-node :table))
       :rmform (/ ,(wrap-position-capture
                     ~(group (* ':readermac
@@ -274,14 +274,32 @@
 
         word-start-index (lookup/to-index word-start-loc source)
         word-end-index (lookup/to-index word-end-loc source)]
-    (if (= word "")
+    (if (empty? (get word :word))
       source
       (blank-source source word-start-index word-end-index))))
 
 (defn get-syms-at-loc
   "Produce locally visible symbols as lsp items for source at location loc"
   [loc source]
-  (let [blanked-source (get-blanked-source loc source)
-        index (lookup/to-index loc source)
-        tree (make-tree blanked-source)]
-    (get-syms-from-tree tree index)))
+  (try
+    (let [blanked-source (get-blanked-source loc source)
+          index (lookup/to-index loc source)
+          tree (make-tree blanked-source)]
+      (or (get-syms-from-tree tree index) @[]))
+    ([_] @[])))
+
+(defn visible-bindings [loc source]
+  "Return reusable binding labels visible at a source location."
+  (map |(string ($ :label)) (get-syms-at-loc loc source)))
+
+(defn references-for [name source]
+  "Return byte-column ranges for code identifiers matching name."
+  (def references @[])
+  (eachp [line-number line] (string/split "\n" (lookup/code-mask source))
+    (each token (or (peg/match lookup/word-peg line) @[])
+      (when (= name (token 1))
+        (array/push references
+                    {:name name
+                     :range {:start {:line line-number :character (token 0)}
+                             :end {:line line-number :character (token 2)}}}))))
+  references)

@@ -317,7 +317,11 @@
   (test (peg/match word-peg sample) @[[0 "" 0] [1 "defn" 5] [6 "main" 10] [11 "" 11] [12 "&" 13] [14 "args" 18] [19 "" 19] [20 "" 20] [21 "print" 26] [27 "" 27] [28 "hello" 33] [34 "world" 39] [40 "" 40] [41 "" 41]]))
 
 (deftest "test word-peg3"
-  (test (map |(word-at {:line 0 :character $} "(defn main [& args] (print \"hello world\"))") (range 42)) @[{:range [0 0] :word ""} {:range [1 5] :word "defn"} {:range [1 5] :word "defn"} {:range [1 5] :word "defn"} {:range [1 5] :word "defn"} {:range [1 5] :word "defn"} {:range [6 10] :word "main"} {:range [6 10] :word "main"} {:range [6 10] :word "main"} {:range [6 10] :word "main"} {:range [6 10] :word "main"} {:range [11 11] :word ""} {:range [12 13] :word "&"} {:range [12 13] :word "&"} {:range [14 18] :word "args"} {:range [14 18] :word "args"} {:range [14 18] :word "args"} {:range [14 18] :word "args"} {:range [14 18] :word "args"} {:range [19 19] :word ""} {:range [20 20] :word ""} {:range [21 26] :word "print"} {:range [21 26] :word "print"} {:range [21 26] :word "print"} {:range [21 26] :word "print"} {:range [21 26] :word "print"} {:range [21 26] :word "print"} {:range [27 27] :word ""} {:range [28 33] :word "hello"} {:range [28 33] :word "hello"} {:range [28 33] :word "hello"} {:range [28 33] :word "hello"} {:range [28 33] :word "hello"} {:range [28 33] :word "hello"} {:range [34 39] :word "world"} {:range [34 39] :word "world"} {:range [34 39] :word "world"} {:range [34 39] :word "world"} {:range [34 39] :word "world"} {:range [34 39] :word "world"} {:range [40 40] :word ""} {:range [41 41] :word ""}]))
+  (def source "(defn main [& args] (print \"hello world\"))")
+  (test (word-at {:line 0 :character 23} source) {:range [21 26] :word "print"})
+  (test (all |(empty? ($ :word))
+             (map |(word-at {:line 0 :character $} source) (range 27 40)))
+        true))
 
 (deftest "word-at-peg: line 0, character 12, of \"word not a word\n23\n45\""
   (test (word-at {:line 0 :character 12} "word not a word\n23\n45") {:range [11 15] :word "word"}))
@@ -339,4 +343,10 @@
   (test (word-at {:line 0 :character 1} "(hello)") {:range [1 6] :word "hello"})
   (test (word-at {:line 0 :character 1} "[hello]") {:range [1 6] :word "hello"})
   (test (word-at {:line 0 :character 1} "{hello}") {:range [1 6] :word "hello"})
-  (test (word-at {:line 0 :character 1} "\"hello\"") {:range [1 6] :word "hello"}))
+  (test (get (word-at {:line 0 :character 1} "\"hello\"") :word) ""))
+
+(deftest "ignore comments and strings"
+  (test (get (word-at {:line 0 :character 4} "# hidden") :word) "")
+  (test (get (word-at {:line 0 :character 2} "\"hidden\"") :word) "")
+  (test (sexp-at {:line 0 :character 5} "\"(hidden)\"")
+        {:source "" :range @[0 5]}))
