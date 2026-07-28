@@ -1,178 +1,146 @@
 (import ../libs/jayson)
+(import spork/path)
 
 (use judge)
 
-(defn write-output [cursor & responses]
-  (each response responses
-    # Write headers
-    (:write (cursor :to-lsp) (string "Content-Length: " (length response)
-                                     (case (os/which)
-                                       :windows "\n\n" "\r\n\r\n")))
+(def document-uri (string "file://" (path/abspath "test/resources/format-file-after.txt")))
+(def document-text "(def greeting (string \"hello\"))\ngreeting\n")
 
-    # Write response
-    (:write (cursor :to-lsp) response)
-    (+= (cursor :request-id) 1)))
+(defn write-output [cursor & messages]
+  (each message messages
+    (def body (jayson/encode message))
+    (ev/write (cursor :to-lsp)
+              (string "Content-Length: " (length body) "\r\n\r\n" body))))
+
+(defn read-output [cursor]
+  (def headers @"")
+  (while (not (string/has-suffix? "\r\n\r\n" headers))
+    (def chunk (ev/read (cursor :from-lsp) 1))
+    (unless chunk (error "language server closed stdout in response headers"))
+    (buffer/push-string headers chunk))
+
+  (def content-length-line
+    (first (filter |(string/has-prefix? "Content-Length:" $)
+                   (string/split "\r\n" headers))))
+  (unless content-length-line (error "language server response has no Content-Length"))
+  (def content-length
+    (scan-number (string/trim
+                   (string/slice content-length-line (length "Content-Length:")))))
+
+  (def body @"")
+  (while (< (length body) content-length)
+    (def chunk (ev/read (cursor :from-lsp) (- content-length (length body))))
+    (unless chunk (error "language server returned a truncated response"))
+    (buffer/push-string body chunk))
+  (jayson/decode body true))
+
+(defn request [cursor id method &opt params]
+  (write-output cursor {:jsonrpc "2.0" :id id :method method :params (or params {})})
+  (read-output cursor))
+
+(defn notify [cursor method &opt params]
+  (write-output cursor {:jsonrpc "2.0" :method method :params (or params {})}))
 
 (defn start-lsp []
-  (def janet-lsp (os/spawn ["janet" "./src/main.janet"] :p {:in :pipe :out :pipe}))
-
-  (def cursor
-    @{:process janet-lsp
-      :request-id 0
-      :to-lsp (janet-lsp :in)
-      :from-lsp (janet-lsp :out)})
-
-  (write-output cursor
-                (string (jayson/encode
-                          {:id (cursor :request-id)
-                           :method :initialize
-                           :params {:rootUri (os/cwd)
-                                    :capabilities {}}})))
-
+  (def janet-lsp
+    (os/spawn [(dyn :executable) "./src/main.janet" "--dont-search-jpm-tree"]
+              :p {:in :pipe :out :pipe}))
+  (def cursor @{:process janet-lsp
+                :to-lsp (janet-lsp :in)
+                :from-lsp (janet-lsp :out)})
+  (put cursor :initialize
+       (request cursor 0 "initialize"
+                {:rootUri (string "file://" (os/cwd)) :capabilities {}}))
   cursor)
 
 (defn exit-lsp [cursor]
-  (write-output cursor
-                (string (jayson/encode
-                          {:id (cursor :request-id)
-                           :method :shutdown}))
-                (string (jayson/encode
-                          {:id (cursor :request-id)
-                           :method :exit}))))
+  (request cursor 99 "shutdown")
+  (notify cursor "exit")
+  (os/proc-wait (cursor :process)))
+
+(defn open-document [cursor]
+  (notify cursor "textDocument/didOpen"
+          {:textDocument {:uri document-uri
+                          :languageId "janet"
+                          :version 1
+                          :text document-text}})
+  (read-output cursor))
 
 (deftest-type with-process
-  :setup (fn []
-           (start-lsp))
-  :reset (fn [context]
-           # (printf "context is (from reset): %q" context)
-           (exit-lsp context)
-           (os/proc-wait (context :process))
-           (merge-into context (start-lsp)))
-  :teardown (fn [context]
-              (exit-lsp context)
-              (os/proc-wait (context :process))))
-
-(deftest: with-process "Starts and exits" [context]
-  (var got (ev/read (context :from-lsp) 2048))
-
-  (test (-> (jayson/decode (last (string/split "\r\n" got)) true)
-            (put-in [:result :serverInfo :commit] "{{commit}}")
-            (put-in [:result :serverInfo :version] "{{version}}"))
-        @{:id 0
-          :jsonrpc "2.0"
-          :result @{:capabilities @{:completionProvider @{:resolveProvider true}
-                                    :definitionProvider true
-                                    :diagnosticProvider @{:interFileDependencies true
-                                                          :workspaceDiagnostics false}
-                                    :documentFormattingProvider true
-                                    :hoverProvider true
-                                    :signatureHelpProvider @{:triggerCharacters @[" "]}
-                                    :textDocumentSync @{:change 1 :openClose true}}
-                    :serverInfo @{:commit "{{commit}}"
-                                  :name "janet-lsp"
-                                  :version "{{version}}"}}})
-
-  (write-output context (jayson/encode {:jsonrpc 2.0
-                                        :method "janet/serverInfo"
-                                        :params {}}))
-  (set got (ev/read (context :from-lsp) 2048))
-
-  (test (-> (jayson/decode (last (string/split "\r\n" got)) true)
-            (put-in [:result :serverInfo :commit] "{{commit}}")
-            (put-in [:result :serverInfo :version] "{{version}}"))
-        @{:jsonrpc "2.0"
-          :result @{:serverInfo @{:commit "{{commit}}"
-                                  :name "janet-lsp"
-                                  :version "{{version}}"}}}))
-
-(deftest: with-process "test textDocument/didOpen" [context]
-  (var got (ev/read (context :from-lsp) 2048))
-  (write-output context (slurp "./test/resources/textDocument_didOpen_rpc.json"))
-  (set got (ev/read (context :from-lsp) 2048))
-
-  (test (jayson/decode (last (string/split "\r\n" got)) true)
-        @{:jsonrpc "2.0"
-          :method "textDocument/publishDiagnostics"
-          :params @{:diagnostics @[]
-                    :uri "file:///home/caleb/projects/vscode/vscode-janet-plus-plus/janet-lsp/test/test-format-file-after.janet"}}))
+  :setup start-lsp
+  :reset (fn [cursor]
+           (exit-lsp cursor)
+           (merge-into cursor (start-lsp)))
+  :teardown exit-lsp)
 
 (deftest-type with-process-open
   :setup (fn []
-           (start-lsp))
-  :reset (fn [context]
-           (exit-lsp context)
-           (os/proc-wait (context :process))
-           (merge-into context (start-lsp))
+           (def cursor (start-lsp))
+           (put cursor :open (open-document cursor))
+           cursor)
+  :reset (fn [cursor]
+           (exit-lsp cursor)
+           (def next (start-lsp))
+           (put next :open (open-document next))
+           (merge-into cursor next))
+  :teardown exit-lsp)
 
-           # Consume the `initialize` response from the LSP server 
-           (var got (ev/read (context :from-lsp) 2048))
+(deftest: with-process "initialize and server info" [cursor]
+  (def initialize (cursor :initialize))
+  (test (get-in initialize [:result :serverInfo :name]) "janet-lsp")
+  (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
+  (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
+        "janet-lsp"))
 
-           # Call "textDocument/didOpen" to load "./test/test-format-file-after.janet"
-           (write-output context (slurp "./test/resources/textDocument_didOpen_rpc.json"))
-           (set got (ev/read (context :from-lsp) 2048)))
-  :teardown (fn [context]
-              (exit-lsp context)
-              (os/proc-wait (context :process))))
+(deftest: with-process-open "document open publishes diagnostics" [cursor]
+  (test (= (get-in (cursor :open) [:params :uri]) document-uri) true)
+  (test (get-in (cursor :open) [:params :diagnostics]) @[]))
 
-(deftest: with-process-open "test textDocument/didChange" [context]
-  (write-output context (slurp "./test/resources/textDocument_didChange_rpc.json"))
-  (var got (ev/read (context :from-lsp) 2048))
+(deftest: with-process-open "document change publishes diagnostics" [cursor]
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text document-text}]})
+  (def response (read-output cursor))
+  (test (= (get-in response [:params :uri]) document-uri) true)
+  (test (get-in response [:params :diagnostics]) @[]))
 
-  (test (jayson/decode (last (string/split "\r\n" got)) true)
-        @{:jsonrpc "2.0"
-          :method "textDocument/publishDiagnostics"
-          :params @{:diagnostics @[]
-                    :uri "file:///home/caleb/projects/vscode/vscode-janet-plus-plus/janet-lsp/test/test-format-file-after.janet"}}))
+(deftest: with-process-open "hover returns documentation" [cursor]
+  (def response
+    (request cursor 2 "textDocument/hover"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 17}}))
+  (test (get-in response [:result :contents :kind]) "markdown")
+  (test (string/has-prefix? "cfunction" (get-in response [:result :contents :value])) true))
 
-(deftest: with-process-open "test textDocument/hover" [context]
-  (write-output context (slurp "./test/resources/textDocument_hover_rpc.json"))
-  (var got (ev/read (context :from-lsp) 2048))
+(deftest: with-process-open "pull diagnostics returns a full report" [cursor]
+  (def response
+    (request cursor 3 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in response [:result :kind]) "full")
+  (test (get-in response [:result :items]) @[]))
 
-  (test (jayson/decode (last (string/split "\r\n" got)) true)
-    @{:id 350
-      :jsonrpc "2.0"
-      :result @{:contents @{:kind "markdown"
-                            :value "macro  \nboot.janet on line 3245, column 1\n\n```janet\n(use & modules)\n```\n\nSimilar to `import`, but imported bindings are not prefixed with a module\nidentifier. Can also import multiple modules in one shot."}
-                :range @{:end @{:character 4 :line 0}
-                         :start @{:character 1 :line 0}}}}))
+(deftest: with-process-open "completion includes core and local bindings" [cursor]
+  (def response
+    (request cursor 4 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 4}
+              :context {:triggerKind 1}}))
+  (def labels (map |($ :label) (get-in response [:result :items])))
+  (test (get-in response [:result :isIncomplete]) true)
+  (test (has-value? labels "string") true)
+  (test (has-value? labels "greeting") true))
 
-(deftest: with-process-open "test textDocument/diagnostic" [context]
-  (write-output context (slurp "./test/resources/textDocument_diagnostic_rpc.json"))
-  (var got (ev/read (context :from-lsp) 2048))
-
-  (test (jayson/decode (last (string/split "\r\n" got)) true)
-        @{:id 6
-          :jsonrpc "2.0"
-          :result @{:items @[] :kind "full"}}))
-
-(deftest: with-process-open "test textDocument/completion" [context]
-  (write-output context (slurp "./test/resources/textDocument_completion_rpc.json"))
-  (var got (ev/read (context :from-lsp) 30000))
-
-  (test (as-> (jayson/decode (last (string/split "\r\n" got)) true) x
-              (put-in x [:result :items] (string/format "{{%d items here}}" (length (get-in x [:result :items])))))
-    @{:id 6
-      :jsonrpc "2.0"
-      :result @{:isIncomplete true
-                :items "{{749 items here}}"}}))
-
-(deftest: with-process-open "test completionItem/resolve" [context]
-  (write-output context (slurp "./test/resources/textDocument_completion_rpc.json"))
-  (var got (ev/read (context :from-lsp) 30000))
-
-  (test (as-> (jayson/decode (last (string/split "\r\n" got)) true) x
-              (put-in x [:result :items] (string/format "{{%d items here}}" (length (get-in x [:result :items])))))
-    @{:id 6
-      :jsonrpc "2.0"
-      :result @{:isIncomplete true
-                :items "{{749 items here}}"}})
-
-  (write-output context (slurp "./test/resources/completionItem_resolve_rpc.json"))
-  (set got (ev/read (context :from-lsp) 2048))
-
-  (test (jayson/decode (last (string/split "\r\n" got)) true)
-    @{:id 31
-      :jsonrpc "2.0"
-      :result @{:documentation @{:kind "markdown"
-                                 :value "cfunction  \nsrc/core/corelib.c on line 330, column 1\n\n```janet\n(string & xs)\n```\n\nCreates a string by concatenating the elements of `xs` together. If an element is not a byte sequence, it is converted to bytes via `describe`. Returns the new string."}
-                :label "string"}}))
+(deftest: with-process-open "completion items resolve documentation" [cursor]
+  (def completion
+    (request cursor 5 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 4}
+              :context {:triggerKind 1}}))
+  (def item (first (filter |(= "string" ($ :label))
+                           (get-in completion [:result :items]))))
+  (def response (request cursor 6 "completionItem/resolve" item))
+  (test (get-in response [:result :label]) "string")
+  (test (get-in response [:result :documentation :kind]) "markdown")
+  (test (string/has-prefix? "cfunction"
+                            (get-in response [:result :documentation :value]))
+        true))

@@ -65,6 +65,19 @@ $ jpm deps
 $ jpm build
 ```
 
+### Testing
+
+The test suite requires Janet 1.41 or newer. Install the locked dependencies into
+the repository-local JPM tree, then run the project test task:
+
+```shell
+$ jpm --local load-lockfile
+$ jpm --local run test
+```
+
+The test task runs the same Judge unit and integration suite used by CI. Keeping
+dependencies local avoids relying on modules installed for other Janet projects.
+
 A .jimage (Janet image) file will be generated in `/build`. Using a .jimage file makes Janet LSP fully cross-platform (wherever there is a compatible Janet binary on the user's path). But it also means that you must have a Janet binary to use Janet LSP (this author struggles to imagine a scenario where you would both need the LSP and NOT have Janet itself installed).
 
 ### Installing

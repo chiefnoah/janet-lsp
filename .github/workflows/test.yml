@@ -1,0 +1,17 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pyrmont/action-janet-test@v5
+        with:
+          janet-ver: latest
+          os: linux
+          cmd-deps: jpm --local load-lockfile
+          cmd-test: jpm --local run test

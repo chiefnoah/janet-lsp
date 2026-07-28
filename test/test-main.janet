@@ -1,6 +1,7 @@
 (use judge)
 
 (import ../src/main)
+(import spork/path)
 
 (deftest "parse-content-length"
   (test (main/parse-content-length "000:123:456:789") 123)
@@ -45,64 +46,22 @@
           [:array {:kind 6 :label @[:a 1]}]
           [:nil {:kind 12 :label anil}]]))
 
-(deftest "test find-all-module-files"
-  (test (main/find-all-module-files (os/cwd))
-    @["/home/deck/projects/janet/janet-lsp/build/janet-lsp.jimage"
-      "/home/deck/projects/janet/janet-lsp/test/test-main.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-format-file-after.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-lookup.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-integration.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-format-file-before.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-parser.janet"
-      "/home/deck/projects/janet/janet-lsp/src/lookup.janet"
-      "/home/deck/projects/janet/janet-lsp/src/rpc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/eval.janet"
-      "/home/deck/projects/janet/janet-lsp/src/doc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/main.janet"
-      "/home/deck/projects/janet/janet-lsp/src/misc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/utils.janet"
-      "/home/deck/projects/janet/janet-lsp/src/parser.janet"
-      "/home/deck/projects/janet/janet-lsp/src/logging.janet"
-      "/home/deck/projects/janet/janet-lsp/scratch.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/fmt.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/jayson.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/jpm-defs.janet"]))
+(deftest "find module files without machine-specific paths"
+  (def files (main/find-all-module-files (path/join (os/cwd) "src")))
+  (def basenames (map path/basename files))
+  (test (has-value? basenames "main.janet") true)
+  (test (has-value? basenames "parser.janet") true)
+  (test (all |(or (string/has-suffix? ".janet" $)
+                  (string/has-suffix? ".jimage" $)
+                  (string/has-suffix? ".so" $)) files)
+        true))
 
-(deftest "test find-all-module-files"
-  (test (main/find-all-module-files (os/cwd) true)
-    @["/home/deck/projects/janet/janet-lsp/build/janet-lsp.jimage"
-      "/home/deck/projects/janet/janet-lsp/test/test-main.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-format-file-after.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-lookup.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-integration.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-format-file-before.janet"
-      "/home/deck/projects/janet/janet-lsp/test/test-parser.janet"
-      "/home/deck/projects/janet/janet-lsp/src/lookup.janet"
-      "/home/deck/projects/janet/janet-lsp/src/rpc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/eval.janet"
-      "/home/deck/projects/janet/janet-lsp/src/doc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/main.janet"
-      "/home/deck/projects/janet/janet-lsp/src/misc.janet"
-      "/home/deck/projects/janet/janet-lsp/src/utils.janet"
-      "/home/deck/projects/janet/janet-lsp/src/parser.janet"
-      "/home/deck/projects/janet/janet-lsp/src/logging.janet"
-      "/home/deck/projects/janet/janet-lsp/scratch.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/fmt.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/jayson.janet"
-      "/home/deck/projects/janet/janet-lsp/libs/jpm-defs.janet"]))
-
-(deftest "test find-unique-paths"
-  (test (main/find-unique-paths (main/find-all-module-files (os/cwd)))
-    @["./build/:all:.jimage"
-      "./test/:all:.janet"
-      "./src/:all:.janet"
-      "./:all:.janet"
-      "./libs/:all:.janet"]))
-
-(deftest "test find-unique-paths"
-  (test (main/find-unique-paths (main/find-all-module-files (os/cwd) true))
-    @["./build/:all:.jimage"
-      "./test/:all:.janet"
-      "./src/:all:.janet"
-      "./:all:.janet"
-      "./libs/:all:.janet"]))
+(deftest "find unique module paths"
+  (def paths (main/find-unique-paths
+               [(path/join (os/cwd) "src/main.janet")
+                (path/join (os/cwd) "src/parser.janet")
+                (path/join (os/cwd) "example/init.janet")]))
+  (test paths
+        @["./src/:all:.janet"
+          "./example/:all:.janet"
+          "./example/init.janet"]))
