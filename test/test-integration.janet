@@ -32,7 +32,7 @@
 (defn read-output [cursor]
   (def headers @"")
   (while (not (string/has-suffix? "\r\n\r\n" headers))
-    (def chunk (ev/read (cursor :from-lsp) 1))
+    (def chunk (ev/read (cursor :from-lsp) 1 nil 10))
     (unless chunk (error "language server closed stdout in response headers"))
     (buffer/push-string headers chunk))
   (unless (string/has-prefix? "Content-Length:" headers)
@@ -48,7 +48,7 @@
 
   (def body @"")
   (while (< (length body) content-length)
-    (def chunk (ev/read (cursor :from-lsp) (- content-length (length body))))
+    (def chunk (ev/read (cursor :from-lsp) (- content-length (length body)) nil 10))
     (unless chunk (error "language server returned a truncated response"))
     (buffer/push-string body chunk))
   (json/decode body true))
@@ -165,6 +165,53 @@
   (notify cursor "exit")
   (os/proc-wait process)
   (os/proc-kill console true))
+
+(deftest "workspace index scans report progress without blocking initialization"
+  (def root (string "/tmp/janet-lsp-index-progress-" (os/getpid)))
+  (os/mkdir root)
+  (spit (path/join root "main.janet") "(def indexed-value 1)\n")
+  (def root-uri (uri/path->file-uri root))
+  (def cursor (spawn-lsp))
+  (def initialized
+    (request cursor 100 "initialize"
+             {:rootUri root-uri
+              :capabilities {:window {:workDoneProgress true}
+                             :textDocument {:diagnostic {}}}}))
+  (test (get-in initialized [:id]) 100)
+  (notify cursor "initialized")
+  (def begin (read-output cursor))
+  (test (get-in begin [:method]) "$/progress")
+  (test (get-in begin [:params :value :kind]) "begin")
+  (def trust (read-output cursor))
+  (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
+  (ev/sleep 0.2)
+  (write-output cursor {:jsonrpc "2.0" :id 101 :method "janet/serverInfo" :params {}})
+  (def ended (read-output cursor))
+  (test (get-in ended [:method]) "$/progress")
+  (test (get-in ended [:params :value :kind]) "end")
+  (test (get-in (read-output cursor) [:id]) 101)
+  (exit-lsp cursor)
+  (os/rm (path/join root "main.janet"))
+  (os/rmdir root))
+
+(deftest "cancel workspace index subprocesses"
+  (def root (string "/tmp/janet-lsp-index-cancel-" (os/getpid)))
+  (os/mkdir root)
+  (spit (path/join root "large.janet") (string/repeat "(def indexed-value 1)\n" 20000))
+  (def root-uri (uri/path->file-uri root))
+  (def cursor (spawn-lsp))
+  (request cursor 102 "initialize"
+           {:rootUri root-uri
+            :capabilities {:window {:workDoneProgress true}}
+            :initializationOptions {:trustedWorkspaces [root-uri]}})
+  (notify cursor "initialized")
+  (def begin (read-output cursor))
+  (def token (get-in begin [:params :token]))
+  (notify cursor "window/workDoneProgress/cancel" {:token token})
+  (test (get-in (request cursor 103 "janet/serverInfo") [:id]) 103)
+  (exit-lsp cursor)
+  (os/rm (path/join root "large.janet"))
+  (os/rmdir root))
 
 (deftest: with-process "convert default UTF-16 feature positions" [cursor]
   (def unicode-text "(do \"😀\" string)\n")

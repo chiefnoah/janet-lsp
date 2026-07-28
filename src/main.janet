@@ -3,6 +3,7 @@
 (import ./utils)
 (import ./doc)
 (import ./eval)
+(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./rpc)
@@ -19,6 +20,15 @@
 (use judge)
 
 (def version "0.0.12")
+(def indexer-script (path/join (path/dirname (dyn :current-file)) "indexer.janet"))
+(defn janet-executable []
+  (def executable (dyn :executable))
+  (or (and (os/stat executable) (path/abspath executable))
+      (first (filter os/stat
+                     (map |(path/join $ executable)
+                          (string/split (if (= :windows (os/which)) ";" ":")
+                                        (or (os/getenv "PATH") "")))))
+      executable))
 (def commit
   (with [proc (os/spawn ["git" "rev-parse" "--short" "HEAD"] :xp {:out :pipe})]
     (let [[out] (ev/gather
@@ -110,6 +120,7 @@
         (put document :content content)
         (put document :version version)
         (put document :eval-env env)
+        (index/update workspace (document :uri) content)
         (if (dyn :push-diagnostics)
           (let [message {:method "textDocument/publishDiagnostics"
                          :params {:uri (document :uri)
@@ -193,6 +204,7 @@
                                      :uri client-uri
                                      :path filepath
                                      :eval-env env})
+    (index/update workspace client-uri content)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
       (let [message {:method "textDocument/publishDiagnostics"
@@ -354,8 +366,79 @@
     :path root-path
     :trusted (not (not trusted))
     :trust-prompted false
+    :index @{}
+    :exclusions index/default-exclusions
     :env workspace-env
     :unique-paths unique-paths})
+
+(defn start-index-scans [state]
+  (when (state :work-done-progress)
+    (each workspace (values (state :workspaces))
+      (unless (workspace :scan)
+        (def token (string "janet-lsp/index/" (hash (workspace :uri))))
+        (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-"
+                            (hash (workspace :uri)) ".jdn"))
+        (when (os/stat output) (os/rm output))
+        (put workspace :scan-token token)
+        (put workspace :scan-output output)
+        (put workspace :scan
+             (os/spawn [(janet-executable) indexer-script
+                        (workspace :path)
+                        output (string/format "%j" (workspace :exclusions))]))
+        (transport/write-frame stdout (rpc/notification
+                                        {:method "$/progress"
+                                         :params {:token token :value {:kind "begin"
+                                                                       :title "Index Janet workspace"}}})))))
+  nil)
+
+(defn refresh-index-scans [state]
+  (each workspace (values (state :workspaces))
+    (when-let [output (workspace :scan-output)
+               found (os/stat output)]
+      (put workspace :index (parse (slurp output)))
+      (os/rm output)
+      (os/proc-wait (workspace :scan))
+      (put workspace :scan nil)
+      (put workspace :scan-output nil)
+      (each document (values (state :documents))
+        (when (= workspace (document-workspace state document))
+          (index/update workspace (document :uri) (document :content))))
+      (when (state :work-done-progress)
+        (transport/write-frame stdout (rpc/notification
+                                        {:method "$/progress"
+                                         :params {:token (workspace :scan-token)
+                                                  :value {:kind "end" :message "Index complete"}}})))))
+  state)
+
+(defn on-work-done-progress-cancel [state params]
+  (def token (get params "token"))
+  (each workspace (values (state :workspaces))
+    (when (and (= token (workspace :scan-token)) (workspace :scan))
+      (try (os/proc-kill (workspace :scan) true) ([_] nil))
+      (each output [(workspace :scan-output) (string (workspace :scan-output) ".tmp")]
+        (when (and output (os/stat output)) (os/rm output)))
+      (put workspace :scan nil)
+      (put workspace :scan-output nil)))
+  [:noresponse state])
+
+(defn stop-index-scans [state]
+  (each workspace (values (state :workspaces))
+    (when (workspace :scan)
+      (try (os/proc-kill (workspace :scan) true) ([_] nil))
+      (put workspace :scan nil)))
+  state)
+
+(defn on-watched-files-changed [state params]
+  (each change (get params "changes")
+    (def document-uri (get change "uri"))
+    (def filepath (uri/file-uri->path document-uri))
+    (def workspace (workspace-for-path state filepath))
+    (unless (= workspace (state :standalone-workspace))
+      (case (get change "type")
+        3 (index/remove workspace document-uri)
+        (when (and filepath (os/stat filepath) (string/has-suffix? ".janet" filepath))
+          (try (index/update workspace document-uri (slurp filepath)) ([_] nil))))))
+  [:noresponse state])
 
 (defn initialization-workspace-uris [params]
   (def folders (get params "workspaceFolders"))
@@ -405,6 +488,8 @@
   (def position-encodings (get-in params ["capabilities" "general" "positionEncodings"] @[]))
   (def position-encoding (if (has-value? position-encodings "utf-8") "utf-8" "utf-16"))
   (put state :position-encoding position-encoding)
+  (put state :work-done-progress
+       (not (not (get-in params ["capabilities" "window" "workDoneProgress"]))))
   (def trusted-workspaces
     (or (get-in params ["initializationOptions" "trustedWorkspaces"])
         (get-in params ["initializationOptions" "janetLsp" "trustedWorkspaces"])
@@ -414,6 +499,11 @@
     (when (uri/file-uri->path root-uri)
       (put-in state [:workspaces root-uri]
               (configure-workspace root-uri trusted-workspaces))))
+  (def configured-exclusions
+    (get-in params ["initializationOptions" "excludedDirectories"] @[]))
+  (each workspace (values (state :workspaces))
+    (put workspace :exclusions
+         (distinct (array ;index/default-exclusions ;configured-exclusions))))
   (if-let [diagnostic? (get-in params ["capabilities" "textDocument" "diagnostic"])]
     (setdyn :push-diagnostics false)
     (setdyn :push-diagnostics true))
@@ -440,6 +530,7 @@
     [:ok state message]))
 
 (defn on-initialized [state]
+  (start-index-scans state)
   (def requests (trust-requests state (values (state :workspaces))))
   (if (empty? requests)
     [:noresponse state]
@@ -488,6 +579,7 @@
   [state params]
   (put state :lifecycle :shutdown)
   (put state :pending-requests @{})
+  (stop-index-scans state)
   (logging/info "Shutting down" [:shutdown])
   [:ok state :null])
 
@@ -652,6 +744,8 @@
       # "textDocument/documentSymbol" (on-document-symbols state params) TODO: Implement this? See src/lsp/api.ts:121
       "textDocument/definition" (on-document-definition state params)
       "workspace/didChangeWorkspaceFolders" (on-workspace-folders-changed state params)
+      "workspace/didChangeWatchedFiles" (on-watched-files-changed state params)
+      "window/workDoneProgress/cancel" (on-work-done-progress-cancel state params)
       "$/cancelRequest" (on-cancel-request state params)
       "janet/serverInfo" (on-janet-serverinfo state params)
       "janet/tellJoke" (on-janet-tell-joke state params)
@@ -710,6 +804,7 @@
       [-32600 "Invalid Request" "server has shut down"])))
 
 (defn dispatch-message [message state]
+  (refresh-index-scans state)
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
   (if (rpc/response? message)
@@ -819,6 +914,7 @@
                          :standalone-workspace @{:uri nil
                                                  :path nil
                                                  :trusted false
+                                                 :index @{}
                                                  :env (make-env root-env)
                                                  :unique-paths @[]}}))
 

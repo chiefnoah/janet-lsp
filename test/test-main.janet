@@ -3,6 +3,7 @@
 (import ../src/main)
 (import ../src/eval)
 (import ../src/logging)
+(import ../src/index)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
@@ -20,6 +21,18 @@
 (deftest "select configured debug ports"
   (test (logging/debug-port nil) "8037")
   (test (logging/debug-port {:debug-port 9123}) "9123"))
+
+(deftest "index definitions and code references"
+  (def record
+    (index/analyze "file:///workspace/main.janet"
+                   "(def value 1)\n(defn run [x] (+ value x))\n# value\n\"value\"\n"))
+  (test (map |($ :name) (get record :definitions)) @["value" "run"])
+  (test (length (filter |(= "value" ($ :name)) (get record :references))) 2)
+  (def workspace @{:index @{}})
+  (index/update workspace "file:///workspace/main.janet" "(def value 1)")
+  (test (length (index/definitions workspace "value")) 1)
+  (index/remove workspace "file:///workspace/main.janet")
+  (test (index/definitions workspace "value") @[]))
 
 (deftest "convert negotiated position encodings"
   (def line "aé☃😀é")
