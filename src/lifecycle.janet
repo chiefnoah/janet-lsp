@@ -21,6 +21,8 @@
     :folding-line-only false
     :folding-range-limit nil
     :document-link-tooltips false
+    :document-changes-support false
+    :rename-file-support false
     :workspaces @{}
     :standalone-workspace @{:uri nil
                             :path nil
@@ -58,8 +60,16 @@
                        "rangeLimit"]))
   (put state :document-link-tooltips
        (not (not (get-in params
-                         ["capabilities" "textDocument" "documentLink"
-                          "tooltipSupport"]))))
+                          ["capabilities" "textDocument" "documentLink"
+                           "tooltipSupport"]))))
+  (put state :rename-file-support
+       (has-value?
+         (get-in params ["capabilities" "workspace" "workspaceEdit"
+                         "resourceOperations"] @[])
+         "rename"))
+  (put state :document-changes-support
+       (not (not (get-in params ["capabilities" "workspace" "workspaceEdit"
+                                 "documentChanges"]))))
   (put state :inlay-parameter-hints
        (not= false
              (get-in params

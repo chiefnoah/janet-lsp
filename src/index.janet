@@ -448,7 +448,7 @@
                   (string/has-suffix? (string "/" module "/init.janet") candidate-path))))
           (keys (workspace :index))))))
 
-(defn- module-uris [workspace document-uri module]
+(defn module-uris [workspace document-uri module]
   (if (string/has-prefix? "." module)
     (filter |(get (workspace :index) $) (module-candidates document-uri module))
     (filter

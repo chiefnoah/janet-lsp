@@ -1349,6 +1349,205 @@
         -32602)
   (exit-lsp cursor))
 
+(deftest "rename import aliases selective exports and module files safely"
+  (def root (temp-directory "janet-lsp-module-rename"))
+  (def module-path (path/join root "module.janet"))
+  (def reexport-path (path/join root "reexport.janet"))
+  (def consumer-path (path/join root "consumer.janet"))
+  (def closed-path (path/join root "closed.janet"))
+  (def prefix-path (path/join root "prefix.janet"))
+  (def default-path (path/join root "default.janet"))
+  (def a-root (path/join root "a"))
+  (def b-root (path/join root "b"))
+  (os/mkdir a-root)
+  (os/mkdir b-root)
+  (def a-foo-path (path/join a-root "foo.janet"))
+  (def b-foo-path (path/join b-root "foo.janet"))
+  (def ambiguous-path (path/join root "ambiguous.janet"))
+  (spit module-path "(def shared 1)\n(def- collision 2)\n")
+  (spit reexport-path
+        "(import ./module :only [shared] :prefix \"nested/\" :export true)\n")
+  (spit consumer-path
+        (string "(import ./reexport :as api :only [nested/shared])\n"
+                "api/nested/shared api/nested/shared\n"))
+  (spit closed-path "(import ./module :as closed)\nclosed/shared\n")
+  (spit prefix-path "(import ./module :prefix \"old-\")\nold-shared\n")
+  (spit default-path "(import ./module)\nmodule/shared\n")
+  (spit a-foo-path "(def a 1)\n")
+  (spit b-foo-path "(def b 2)\n")
+  (spit ambiguous-path
+        (string "(import ./a/foo :only [a])\n"
+                "(import ./b/foo :only [b])\nfoo/a foo/b\n"))
+  (def root-uri (uri/path->file-uri root))
+  (def module-uri (uri/path->file-uri module-path))
+  (def reexport-uri (uri/path->file-uri reexport-path))
+  (def consumer-uri (uri/path->file-uri consumer-path))
+  (def closed-uri (uri/path->file-uri closed-path))
+  (def prefix-uri (uri/path->file-uri prefix-path))
+  (def default-uri (uri/path->file-uri default-path))
+  (def ambiguous-uri (uri/path->file-uri ambiguous-path))
+  (index-cache/write (index-cache/path-for root-uri) root-uri
+                     index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 281 "initialize"
+           {:rootUri root-uri
+            :capabilities
+            {:textDocument {:diagnostic {}}
+             :workspace {:workspaceEdit {:documentChanges true
+                                          :resourceOperations ["rename"]}}}})
+  (open-text-document cursor module-uri
+                      "(def shared 1)\n(def- collision 2)\n")
+  (open-text-document
+    cursor reexport-uri
+    "(import ./module :only [shared] :prefix \"nested/\" :export true)\n")
+  (open-text-document
+    cursor consumer-uri
+    (string "(import ./reexport :as api :only [nested/shared])\n"
+            "api/nested/shared api/nested/shared\n"))
+  (open-text-document cursor prefix-uri
+                      "(import ./module :prefix \"old-\")\nold-shared\n")
+  (open-text-document
+    cursor ambiguous-uri
+    (string "(import ./a/foo :only [a])\n"
+            "(import ./b/foo :only [b])\nfoo/a foo/b\n"))
+
+  (def alias-prepared
+    (request cursor 282 "textDocument/prepareRename"
+             {:textDocument {:uri consumer-uri}
+              :position {:line 0 :character 24}}))
+  (test (get-in alias-prepared [:result :placeholder]) "api")
+  (def alias-use-prepared
+    (request cursor 289 "textDocument/prepareRename"
+             {:textDocument {:uri consumer-uri}
+              :position {:line 1 :character 1}}))
+  (test (get-in alias-use-prepared [:result :range :end :character]) 3)
+  (test (get-in
+          (request cursor 294 "textDocument/prepareRename"
+                   {:textDocument {:uri consumer-uri}
+                    :position {:line 1 :character 19}})
+          [:result :range :start :character])
+        18)
+  (def member-prepared
+    (request cursor 290 "textDocument/prepareRename"
+             {:textDocument {:uri consumer-uri}
+              :position {:line 1 :character 13}}))
+  (test (get-in member-prepared [:result :placeholder]) "shared")
+  (test (get-in member-prepared [:result :range :start :character]) 11)
+  (test (get-in
+          (request cursor 291 "textDocument/prepareRename"
+                   {:textDocument {:uri consumer-uri}
+                    :position {:line 1 :character 3}})
+          [:error :code])
+        -32602)
+  (def alias-renamed
+    (get-in
+      (request cursor 283 "textDocument/rename"
+               {:textDocument {:uri consumer-uri}
+                :position {:line 0 :character 24}
+                :newName "client"})
+      [:result :documentChanges 0]))
+  (test (get-in alias-renamed [:textDocument :version]) 1)
+  (test (map |($ :newText) (alias-renamed :edits))
+        @["client" "client/nested/shared" "client/nested/shared"])
+
+  (def prefix-renamed
+    (get-in
+      (request cursor 288 "textDocument/rename"
+               {:textDocument {:uri prefix-uri}
+                :position {:line 0 :character 30}
+                :newName "new-"})
+      [:result :documentChanges 0]))
+  (test (map |($ :newText) (prefix-renamed :edits)) @["new-" "new-shared"])
+
+  (def member-renamed
+    (get-in
+      (request cursor 284 "textDocument/rename"
+               {:textDocument {:uri reexport-uri}
+                :position {:line 0 :character 30}
+                :newName "renamed"})
+      [:result :documentChanges]))
+  (test (length member-renamed) 6)
+  (test (all |(string/has-suffix? "renamed" ($ :newText))
+             (catseq [change :in member-renamed edit :in (change :edits)] edit))
+        true)
+  (test (get-in
+          (request cursor 296 "textDocument/rename"
+                   {:textDocument {:uri module-uri}
+                    :position {:line 0 :character 7}
+                    :newName "collision"})
+          [:error :code])
+        -32602)
+
+  (def file-renamed
+    (get-in
+      (request cursor 285 "textDocument/rename"
+               {:textDocument {:uri reexport-uri}
+                :position {:line 0 :character 10}
+                :newName "renamed-module"})
+      [:result :documentChanges]))
+  (def reexport-change
+    (first (filter |(= reexport-uri (get-in $ [:textDocument :uri])) file-renamed)))
+  (def closed-change
+    (first (filter |(= closed-uri (get-in $ [:textDocument :uri])) file-renamed)))
+  (def rename-operation (first (filter |(= "rename" ($ :kind)) file-renamed)))
+  (def default-change
+    (first (filter |(= default-uri (get-in $ [:textDocument :uri])) file-renamed)))
+  (test (get-in reexport-change [:edits 0 :newText]) "./renamed-module")
+  (test (get-in reexport-change [:textDocument :version]) 1)
+  (test (get-in closed-change [:textDocument :version]) nil)
+  (test (get-in closed-change [:edits 0 :newText]) "./renamed-module")
+  (test (map |($ :newText) (default-change :edits))
+        @["./renamed-module" "renamed-module/shared"])
+  (test (= (rename-operation :oldUri) module-uri) true)
+  (test (= (rename-operation :newUri)
+           (uri/path->file-uri (path/join root "renamed-module.janet")))
+        true)
+  (def one-module-renamed
+    (get-in
+      (request cursor 295 "textDocument/rename"
+               {:textDocument {:uri ambiguous-uri}
+                :position {:line 0 :character 13}
+                :newName "renamed"})
+      [:result :documentChanges]))
+  (def ambiguous-change
+    (first (filter |(= ambiguous-uri (get-in $ [:textDocument :uri]))
+                   one-module-renamed)))
+  (test (map |($ :newText) (ambiguous-change :edits))
+        @["./a/renamed" "renamed/a"])
+  (test (get-in
+          (request cursor 292 "textDocument/rename"
+                   {:textDocument {:uri reexport-uri}
+                    :position {:line 0 :character 10}
+                    :newName "closed"})
+          [:error :code])
+        -32602)
+  (change-text-document
+    cursor prefix-uri
+    "(import ./module :as chosen :prefix \"ignored-\")\nchosen/shared\n" 2)
+  (test (get-in
+          (request cursor 293 "textDocument/prepareRename"
+                   {:textDocument {:uri prefix-uri}
+                    :position {:line 0 :character 43}})
+          [:error :code])
+        -32602)
+  (exit-lsp cursor)
+
+  (def unsupported (spawn-lsp))
+  (request unsupported 286 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document
+    unsupported reexport-uri
+    "(import ./module :only [shared] :prefix \"nested/\" :export true)\n")
+  (test (get-in
+          (request unsupported 287 "textDocument/prepareRename"
+                   {:textDocument {:uri reexport-uri}
+                    :position {:line 0 :character 10}})
+          [:error :code])
+        -32602)
+  (exit-lsp unsupported)
+  (remove-tree root))
+
 (deftest "track active signature parameters across encodings"
   (each encoding ["utf-16" "utf-8"]
     (def capabilities

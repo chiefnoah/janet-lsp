@@ -24,6 +24,8 @@ Format for entires is <version-string> - release date.
   closing delimiters.
 - Expanded versioned quick fixes for calls, unused bindings/imports, and unique
   missing imports, plus deterministic sort and organize-import source actions.
+- Extended workspace rename through aliases, selective imports, re-exports, and
+  safely supported module file and import-path operations.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

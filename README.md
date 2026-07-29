@@ -263,6 +263,21 @@ comments, malformed forms, and colliding prefixes are left untouched. Organize
 imports intentionally does not remove imports implicitly; unused-import removal
 remains an explicit quick fix because loading a module may have side effects.
 
+### Rename
+
+Workspace rename follows resolved binding identities through ordinary imports,
+selective imports, and re-export chains. Renaming an explicit `:as` alias or
+`:prefix` updates only that import and its qualified references, while rejecting
+binding collisions.
+
+When a client advertises versioned document changes and the `rename` resource
+operation, prepare-rename also accepts relative paths for ordinary `.janet`
+imports. Renaming such a module updates every relative import that resolves to
+the same file and includes a `RenameFile` operation. Existing destinations,
+directory modules, package imports, paths outside the owning workspace,
+ambiguous or malformed imports, and clients without file-operation support are
+rejected rather than producing a partial edit.
+
 ## Getting Started (for Development)
 
 ### Clone this project and Build the stand-alone binary and .jimage file
