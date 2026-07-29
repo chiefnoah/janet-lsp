@@ -40,6 +40,15 @@
   (test (get-in initialize [:result :capabilities :callHierarchyProvider]) true)
   (test (get-in initialize [:result :capabilities :typeDefinitionProvider]) true)
   (test (get-in initialize [:result :capabilities :implementationProvider]) true)
+  (test (get-in initialize [:result :capabilities :documentRangeFormattingProvider]) true)
+  (test (get-in initialize
+                [:result :capabilities :documentOnTypeFormattingProvider
+                 :firstTriggerCharacter])
+        ")")
+  (test (get-in initialize
+                [:result :capabilities :documentOnTypeFormattingProvider
+                 :moreTriggerCharacter])
+        @["]" "}"])
   (test (get-in initialize
                 [:result :capabilities :documentLinkProvider :resolveProvider])
         false)
@@ -2140,3 +2149,133 @@
   (test (get-in (request cursor 79 "textDocument/formatting" params) [:result]) :null)
   (test (get-in (request cursor 80 "janet/serverInfo") [:id]) 80)
   (exit-lsp cursor))
+
+(deftest "format complete ranges and indentation on type"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source
+    (string "(def untouched   1)\n"
+            "(defn target [x]\n"
+            "  (+   x  1))\n"
+            "(def after   2)\n"))
+  (open-text-document cursor document-uri source)
+  (def range-params
+    {:textDocument {:uri document-uri}
+     :range {:start {:line 1 :character 0}
+             :end {:line 2 :character 13}}
+     :options {:tabSize 2 :insertSpaces true}})
+  (def ranged (request cursor 252 "textDocument/rangeFormatting" range-params))
+  (test (get-in ranged [:result 0 :range :start :line]) 2)
+  (test (get-in ranged [:result 0 :range :start :character]) 5)
+  (test (get-in ranged [:result 0 :range :end :line]) 2)
+  (test (get-in ranged [:result 0 :range :end :character]) 9)
+  (test (get-in ranged [:result 0 :newText]) "x")
+  (test (length (get-in ranged [:result])) 1)
+  # Formatting is pure until the client applies the edit.
+  (test (get-in
+          (request cursor 253 "textDocument/rangeFormatting" range-params)
+          [:result 0 :newText])
+        "x")
+
+  (def partial
+    (request cursor 254 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 1 :character 0}
+                      :end {:line 2 :character 10}}
+              :options {:tabSize 4 :insertSpaces false}}))
+  (test (get-in partial [:result 0 :range :start :character]) 5)
+  (test (get-in partial [:result 0 :range :end :character]) 9)
+
+  (change-text-document cursor document-uri "(outer   x (foo   bar))\n" 2)
+  (def inner
+    (request cursor 261 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 11}
+                      :end {:line 0 :character 22}}
+              :options {:tabSize 2 :insertSpaces true}}))
+  (test (length (get-in inner [:result])) 1)
+  (test (>= (get-in inner [:result 0 :range :start :character]) 11) true)
+  (test (<= (get-in inner [:result 0 :range :end :character]) 22) true)
+
+  (change-text-document cursor document-uri "foo   bar" 3)
+  (def atomic
+    (request cursor 262 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 0}
+                      :end {:line 0 :character 9}}
+              :options {:tabSize 2 :insertSpaces true}}))
+  (test (length (get-in atomic [:result])) 1)
+  (test (get-in atomic [:result 0 :newText]) "")
+
+  (change-text-document cursor document-uri "(foo)   (bar)" 4)
+  (def siblings
+    (request cursor 263 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 0}
+                      :end {:line 0 :character 13}}
+              :options {:tabSize 2 :insertSpaces true}}))
+  (test (length (get-in siblings [:result])) 1)
+  (test (get-in siblings [:result 0 :newText]) "")
+
+  (change-text-document cursor document-uri "(def 😀value   1)\n" 5)
+  (def unicode
+    (request cursor 255 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 0}
+                      :end {:line 0 :character 17}}
+              :options {:tabSize 2 :insertSpaces true}}))
+  (test (get-in unicode [:result 0 :range :start :character]) 13)
+  (test (get-in unicode [:result 0 :range :end :character]) 15)
+  (test (get-in unicode [:result 0 :newText]) "")
+
+  (def on-type-source "(defn f []\n        (+ 1 2)\n)\n")
+  (change-text-document cursor document-uri on-type-source 6)
+  (def on-type-params
+    {:textDocument {:uri document-uri}
+     :position {:line 1 :character 15}
+     :ch ")"
+     :options {:tabSize 2 :insertSpaces true}})
+  (def on-type (request cursor 256 "textDocument/onTypeFormatting" on-type-params))
+  (test (get-in on-type [:result 0 :range :start :line]) 1)
+  (test (get-in on-type [:result 0 :range :start :character]) 2)
+  (test (get-in on-type [:result 0 :range :end :line]) 2)
+  (test (get-in on-type [:result 0 :range :end :character]) 0)
+  (test (get-in on-type [:result 0 :newText]) "(+ 1 2)")
+  (test (deep=
+          (get-in (request cursor 257 "textDocument/onTypeFormatting" on-type-params)
+                  [:result])
+          (get-in on-type [:result]))
+        true)
+
+  (change-text-document cursor document-uri "(" 7)
+  (test (get-in
+          (request cursor 258 "textDocument/rangeFormatting"
+                   {:textDocument {:uri document-uri}
+                    :range {:start {:line 0 :character 0}
+                            :end {:line 0 :character 1}}
+                    :options {:tabSize 2 :insertSpaces true}})
+          [:result])
+        @[])
+  (test (get-in
+          (request cursor 259 "textDocument/onTypeFormatting"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 0 :character 1}
+                    :ch ")"
+                    :options {:tabSize 2 :insertSpaces true}})
+          [:result])
+        @[])
+  (exit-lsp cursor)
+
+  (def utf8-cursor
+    (start-lsp {:general {:positionEncodings ["utf-8"]}
+                :textDocument {:diagnostic {}}}))
+  (open-text-document utf8-cursor document-uri "(def 😀value   1)\n")
+  (def utf8-edit
+    (request utf8-cursor 260 "textDocument/rangeFormatting"
+             {:textDocument {:uri document-uri}
+              :range {:start {:line 0 :character 0}
+                      :end {:line 0 :character 19}}
+              :options {:tabSize 2 :insertSpaces true}}))
+  (test (get-in utf8-edit [:result 0 :range :start :character]) 15)
+  (test (get-in utf8-edit [:result 0 :range :end :character]) 17)
+  (test (get-in utf8-edit [:result 0 :newText]) "")
+  (exit-lsp utf8-cursor))

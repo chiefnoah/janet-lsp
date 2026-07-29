@@ -20,6 +20,8 @@ Format for entires is <version-string> - release date.
   imported, recursive, and macro callables.
 - Added type-definition and implementation navigation through explicit,
   import-aware `:janet-lsp/type-definition` and `:janet-lsp/implements` metadata.
+- Added complete-form range formatting and minimal canonical on-type edits for
+  closing delimiters.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

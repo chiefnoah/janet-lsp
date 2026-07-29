@@ -101,6 +101,9 @@
       :signatureHelpProvider {:triggerCharacters ["(" " "]
                               :retriggerCharacters [" "]}
       :documentFormattingProvider true
+       :documentRangeFormattingProvider true
+       :documentOnTypeFormattingProvider
+       {:firstTriggerCharacter ")" :moreTriggerCharacter ["]" "}"]}
        :definitionProvider true
        :typeDefinitionProvider true
        :implementationProvider true

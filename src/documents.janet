@@ -1,5 +1,6 @@
 (import ../libs/fmt)
 (import ./analysis)
+(import ./document-features)
 (import ./index)
 (import ./logging)
 (import ./lookup)
@@ -213,6 +214,171 @@
                            :end (position/document-end content
                                                        (state :position-encoding))}
                    :newText formatted}]])))
+
+(defn- format-source [source]
+  (try (freeze (fmt/format (string/slice source)))
+    ([err]
+      (logging/warn (string/format "formatter failed: %s" err) [:formatting])
+      nil)))
+
+(defn- format-spans [content start end]
+  (def scanned (document-features/scan content))
+  (def forms (filter |($ :complete) (scanned :forms)))
+  (def atomic-spans
+    (array
+      ;(map |{:start (or ($ :literal-start) ($ :start))
+              :end (or ($ :literal-end) ($ :end))}
+            (scanned :tokens))
+      ;(scanned :comments)))
+  (def contained
+    (sort-by |[($ :start) ($ :end)]
+             (filter |(and (<= start ($ :start)) (<= ($ :end) end)) forms)))
+  (def outer-contained
+    (filter
+      (fn [candidate]
+        (not (any? (map |(and (not= candidate $)
+                              (<= ($ :start) (candidate :start))
+                              (<= (candidate :end) ($ :end)))
+                        contained))))
+      contained))
+  (def enclosing
+    (first
+      (sort-by |(- ($ :end) ($ :start))
+               (filter |(and (<= ($ :start) start) (<= end ($ :end))) forms))))
+  (cond
+    (not (empty? outer-contained))
+    (array
+      ;[{:start (get-in outer-contained [0 :start])
+         :end ((last outer-contained) :end) :complete true}]
+      ;(if enclosing [enclosing] @[]))
+
+    enclosing [enclosing]
+
+    (and (< start end)
+         (not
+           (any?
+              (map |(or (and (< ($ :start) start) (< start ($ :end)))
+                        (and (< ($ :start) end) (< end ($ :end))))
+                   atomic-spans)))
+         (not
+           (any? (map |(and (not ($ :complete))
+                            (< ($ :start) end) (< start ($ :end)))
+                      (scanned :forms)))))
+    [{:start start :end end :complete true}]
+
+    @[]))
+
+(defn- utf-8-boundary? [bytes index]
+  (or (= index 0) (= index (length bytes))
+      (not= 128 (band (bytes index) 192))))
+
+(defn- format-span-edit [state content span &opt requested-start requested-end]
+  (def original (string/slice content (span :start) (span :end)))
+  (def start-position (lookup/from-index (span :start) content))
+  # Isolated multiline forms cannot reproduce an enclosing nonzero column safely.
+  (unless (and (> (start-position :character) 0) (string/find "\n" original))
+    (when-let [raw-formatted (format-source original)]
+      (def formatted
+        (if (and (not (string/has-suffix? "\n" original))
+                 (string/has-suffix? "\n" raw-formatted))
+          (string/slice raw-formatted 0 (dec (length raw-formatted)))
+          raw-formatted))
+      (unless (= original formatted)
+        (def original-bytes (string/bytes original))
+        (def formatted-bytes (string/bytes formatted))
+        (var prefix 0)
+        (while (and (< prefix (length original-bytes))
+                    (< prefix (length formatted-bytes))
+                    (= (original-bytes prefix) (formatted-bytes prefix)))
+          (+= prefix 1))
+        (while (and (> prefix 0)
+                    (or (not (utf-8-boundary? original-bytes prefix))
+                        (not (utf-8-boundary? formatted-bytes prefix))))
+          (-= prefix 1))
+        (var suffix 0)
+        (while (and (< (+ prefix suffix) (length original-bytes))
+                    (< (+ prefix suffix) (length formatted-bytes))
+                    (= (original-bytes (- (dec (length original-bytes)) suffix))
+                       (formatted-bytes (- (dec (length formatted-bytes)) suffix))))
+          (+= suffix 1))
+        (while (and (> suffix 0)
+                    (or (not (utf-8-boundary?
+                               original-bytes (- (length original-bytes) suffix)))
+                        (not (utf-8-boundary?
+                               formatted-bytes (- (length formatted-bytes) suffix)))))
+          (-= suffix 1))
+        (def edit-start (+ (span :start) prefix))
+        (def edit-end (- (span :end) suffix))
+        (when (and (or (nil? requested-start) (<= requested-start edit-start))
+                   (or (nil? requested-end) (<= edit-end requested-end)))
+          {:range (server-utils/lsp-range
+                    state content
+                    {:start (lookup/from-index edit-start content)
+                     :end (lookup/from-index edit-end content)})
+           :newText (string/slice formatted prefix
+                                  (- (length formatted) suffix))})))))
+
+(defn on-range-formatting [state params]
+  (def document (server-utils/document state params))
+  (def content (document :content))
+  (def requested (get params "range"))
+  (def start-position
+    (position/lsp->byte-position content (get requested "start")
+                                 (state :position-encoding)))
+  (def end-position
+    (position/lsp->byte-position content (get requested "end")
+                                 (state :position-encoding)))
+  (if (and start-position end-position)
+    (let [start (lookup/to-index start-position content)
+          end (lookup/to-index end-position content)]
+      (if (<= start end)
+        (if-let [edit
+                 (some |(format-span-edit state content $ start end)
+                       (format-spans content start end))]
+          [:ok state [edit]]
+          [:ok state @[]])
+        [:ok state :null]))
+    [:ok state :null]))
+
+(defn on-type-formatting [state params]
+  (def document (server-utils/document state params))
+  (def content (document :content))
+  (def trigger (get params "ch"))
+  (def byte-position (server-utils/request-byte-position state params content))
+  (if (and byte-position (has-value? [")" "]" "}"] trigger))
+    (let [cursor (lookup/to-index byte-position content)
+          bytes (string/bytes content)]
+      (if (and (> cursor 0) (= (first (string/bytes trigger)) (bytes (dec cursor))))
+        (let [forms ((document-features/scan content) :forms)
+              incomplete (filter |(not ($ :complete)) forms)
+              candidates
+              (filter
+                (fn [candidate]
+                  (and (candidate :complete) (= cursor (candidate :end))
+                       (= (get document-features/close-to-open
+                               (first (string/bytes trigger)))
+                          (candidate :open))
+                       (not
+                         (any?
+                           (map (fn [ancestor]
+                                  (and (<= (ancestor :start) (candidate :start))
+                                       (<= (candidate :end) (ancestor :end))))
+                                incomplete)))))
+                forms)
+              typed (first (sort-by |($ :start) candidates))
+              span
+              (and typed
+                   (first
+                     (sort-by |($ :start)
+                              (filter |(and ($ :complete)
+                                            (<= ($ :start) (typed :start))
+                                            (<= (typed :end) ($ :end)))
+                                      forms))))]
+          (if-let [edit (and span (format-span-edit state content span))]
+            [:ok state [edit]]
+            [:ok state @[]]))
+        [:ok state @[]]))
+    [:ok state @[]]))
 
 (defn on-open [state params]
   (let [content (get-in params ["textDocument" "text"])

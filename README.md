@@ -12,7 +12,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Context-aware core, lexical, module, keyword, snippet, and auto-import completion
 - Named-argument completion, hover documentation, and active-parameter signature help
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
-- Whole-document formatting
+- Whole-document, complete-form range, and canonical on-type indentation formatting
 - Local, imported, indexed, and runtime source-map definition lookup
 - Explicit source-indexed type-definition and implementation navigation
 - Parser-backed multiline symbols, module aliases, selective imports, and re-exports
@@ -133,6 +133,16 @@ not include text edits. Disable the category with:
   }
 }
 ```
+
+### Formatting
+
+Document and range formatting use Janet's canonical formatter, so client tab
+and spacing options are advisory. Range formatting changes only complete forms
+fully contained by the requested range and never edits neighboring source.
+On-type formatting applies a minimal canonical edit when `)`, `]`, or `}`
+completes a structurally valid form. Incomplete or malformed regions that cannot
+be formatted safely produce no edits, and formatting requests never mutate the
+server's document state.
 
 ### Contextual Completion
 

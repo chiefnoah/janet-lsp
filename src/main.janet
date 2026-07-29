@@ -61,6 +61,8 @@
   {"textDocument/completion" true
    "textDocument/diagnostic" true
    "textDocument/formatting" true
+   "textDocument/rangeFormatting" true
+   "textDocument/onTypeFormatting" true
    "textDocument/hover" true
    "textDocument/signatureHelp" true
    "textDocument/definition" true
@@ -86,6 +88,7 @@
    "textDocument/definition" true
    "textDocument/typeDefinition" true
    "textDocument/implementation" true
+   "textDocument/onTypeFormatting" true
    "textDocument/references" true
    "textDocument/documentHighlight" true
    "textDocument/prepareCallHierarchy" true
@@ -114,6 +117,8 @@
         "textDocument/diagnostic" (documents/on-diagnostic state params)
         "workspace/diagnostic" (documents/on-workspace-diagnostic state params)
         "textDocument/formatting" (documents/on-formatting state params)
+        "textDocument/rangeFormatting" (documents/on-range-formatting state params)
+        "textDocument/onTypeFormatting" (documents/on-type-formatting state params)
 
         "textDocument/completion" (editor-features/on-completion state params)
         "completionItem/resolve" (editor-features/on-completion-resolve state params)
