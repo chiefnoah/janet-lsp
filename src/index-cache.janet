@@ -2,7 +2,7 @@
 (import ./uri)
 (import spork/path)
 
-(def format-version 4)
+(def format-version 5)
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
@@ -63,7 +63,9 @@
        (or (nil? (definition :type-target))
            (and (dictionary? (definition :type-target))
                 (string? (get-in definition [:type-target :name]))
-                (range? (get-in definition [:type-target :range]))))
+                 (range? (get-in definition [:type-target :range]))))
+       (or (nil? (definition :return-target))
+           (string? (definition :return-target)))
        (indexed? (definition :implementation-targets))
        (all |(and (dictionary? $) (string? ($ :name)) (range? ($ :range)))
             (definition :implementation-targets))

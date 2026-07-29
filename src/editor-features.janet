@@ -158,39 +158,3 @@
   (match (semantic-data state params request-id (get params "range"))
     [:cancelled] [:rpc-error state -32800 "Request cancelled"]
     [:ok data] [:ok state {:data data}]))
-
-(defn on-inlay-hint [state params]
-  (if (not (state :inlay-parameter-hints))
-    [:ok state @[]]
-    (let [document (server-utils/document state params)
-          content (document :content)
-          requested (get params "range")
-          hints @[]]
-      (each reference (get-in document [:analysis :references] @[])
-        (def byte-start (get-in reference [:range :start]))
-        (def byte-end (get-in reference [:range :end]))
-        (def position (position/byte->lsp-position content byte-start
-                                                   (state :position-encoding)))
-        (when (and position (server-utils/position-in-range? position requested))
-          (def context (lookup/call-context byte-end content))
-          (when (and context
-                     (not (deep= byte-start
-                                 (lookup/from-index (first (context :range)) content))))
-            (when-let [signature
-                       (doc/get-signature (symbol (context :callee))
-                                          (document :eval-env))]
-              (def parameters (map |($ :label) (signature-parameters signature)))
-              (def active (context :active-parameter))
-              (when (and (< active (length parameters))
-                         (not (any? (map |(string/has-prefix? "&" $) parameters))))
-                (def parameter (parameters active))
-                (when (not= parameter (reference :name))
-                  (array/push hints
-                              {:position position
-                               :label (string parameter ":")
-                               :kind 2
-                               :paddingRight true
-                               :tooltip {:kind "markdown"
-                                         :value (string "Parameter `" parameter "` of `"
-                                                        (context :callee) "`")}})))))))
-      [:ok state (distinct hints)])))

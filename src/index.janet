@@ -5,7 +5,8 @@
 
 (def default-exclusions [".git" ".hg" ".svn" "build" "dist" "node_modules" "jpm_tree"])
 (def definition-heads
-  {"def" 13 "def-" 13 "var" 13 "var-" 13
+  {"def" 13 "def-" 13 "defglobal" 13
+   "var" 13 "var-" 13 "varglobal" 13
    "defn" 12 "defn-" 12 "varfn" 12 "varfn-" 12
    "defmacro" 12 "defmacro-" 12})
 (def function-heads
@@ -108,6 +109,9 @@
           parsed-metadata))
   (def implementation-value
     (some |(and (dictionary? $) (get $ :janet-lsp/implements))
+           parsed-metadata))
+  (def return-value
+    (some |(and (dictionary? $) (get $ :janet-lsp/returns))
           parsed-metadata))
   (def implementation-names
     (cond
@@ -116,7 +120,9 @@
       (array ;implementation-value)
       @[]))
   {:type-target (when (and (string? type-name) (not (empty? type-name)))
-                  {:name type-name :range target-range})
+                   {:name type-name :range target-range})
+   :return-target (when (and (string? return-value) (not (empty? return-value)))
+                    return-value)
    :implementation-targets
    (map |{:name $ :range target-range}
         (filter |(not (empty? $)) implementation-names))})
@@ -146,7 +152,8 @@
      :kind kind
      :form form-head
      :private (private-definition? form source form-head)
-     :type-target (metadata :type-target)
+      :type-target (metadata :type-target)
+      :return-target (metadata :return-target)
      :implementation-targets (metadata :implementation-targets)
      :top-level top-level
      :container container

@@ -9,6 +9,7 @@
 (import ./code-lenses)
 (import ./editor-features)
 (import ./lifecycle)
+(import ./inlay-hints)
 (import ./logging)
 (import ./navigation)
 (import ./rpc)
@@ -139,7 +140,7 @@
         "textDocument/codeLens" (code-lenses/on-code-lens state params)
         "codeLens/resolve" (code-lenses/on-resolve state params)
         "workspace/executeCommand" (code-lenses/on-execute-command state params)
-        "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
+        "textDocument/inlayHint" (inlay-hints/on-inlay-hint state params)
 
         "textDocument/definition" (navigation/on-definition state params)
         "textDocument/typeDefinition" (navigation/on-type-definition state params)

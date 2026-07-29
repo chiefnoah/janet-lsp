@@ -123,14 +123,23 @@ paths, startup configuration, or trust from another workspace.
 ### Inlay Hints
 
 Parameter-name hints are enabled by default. Janet LSP emits them only for
-resolved, non-variadic calls when the argument name does not already match the
-parameter, and only inside the requested range. Hints are informational and do
-not include text edits. Disable the category with:
+resolved calls when the argument name does not already match the parameter,
+recognizes static positional and named tails without repeating explicit named
+labels, and limits every category to the requested range. Hints are
+informational and do not include text edits.
+
+Literal constant values and explicit `:janet-lsp/returns` metadata can be shown
+at resolved uses and function definitions. These additional categories are
+disabled by default:
 
 ```json
 {
   "initializationOptions": {
-    "inlayHints": {"parameterNames": false}
+    "inlayHints": {
+      "parameterNames": true,
+      "constantValues": true,
+      "returnMetadata": true
+    }
   }
 }
 ```

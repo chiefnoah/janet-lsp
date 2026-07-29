@@ -1793,6 +1793,57 @@
         @[])
   (exit-lsp disabled))
 
+(deftest "emit static constant and return metadata hints"
+  (each encoding ["utf-16" "utf-8"]
+    (def capabilities
+      (if (= encoding "utf-8")
+        {:general {:positionEncodings ["utf-8"]}
+         :textDocument {:diagnostic {}}}
+        {:textDocument {:diagnostic {}}}))
+    (def cursor
+      (start-lsp capabilities
+                 {:inlayHints {:parameterNames true :constantValues true
+                               :returnMetadata true}}))
+    (def source
+      (string "(def 😀 42)\n"
+              "(defn run @{:janet-lsp/returns \"number\"} [x &named option]\n"
+              "  (+ 😀 x))\n"
+              "(run 1 :option 2)\n"
+              "😀\n"
+              "(defn target [wrong] nil)\n"
+              "(defn shadow [target] (target 1))\n"
+              "(def bad 1 2)\n"
+              "bad\n"))
+    (open-text-document cursor document-uri source)
+    (def hints
+      (get-in
+        (request cursor 310 "textDocument/inlayHint"
+                 {:textDocument {:uri document-uri}
+                  :range {:start {:line 0 :character 0}
+                          :end {:line 9 :character 0}}})
+        [:result]))
+    (test (frequencies (map |($ :label) hints))
+          @{" -> number" 1 " = 42" 2 "x:" 1})
+    (test (all |(and (= "markdown" (get-in $ [:tooltip :kind]))
+                     (nil? ($ :textEdits))) hints)
+          true)
+    (test (has-value? (map |($ :label) hints) "wrong:") false)
+    (test (has-value? (map |($ :label) hints) " = 2") false)
+    (def final-constant
+      (last (filter |(= " = 42" ($ :label)) hints)))
+    (test (= (get-in final-constant [:position :character])
+             (if (= encoding "utf-8") 4 2))
+          true)
+    (def restricted
+      (get-in
+        (request cursor 311 "textDocument/inlayHint"
+                 {:textDocument {:uri document-uri}
+                  :range {:start {:line 3 :character 0}
+                          :end {:line 4 :character 0}}})
+        [:result]))
+    (test (map |($ :label) restricted) @["x:"])
+    (exit-lsp cursor)))
+
 (deftest: with-process-open "pull diagnostics returns a full report" [cursor]
   (def response
     (request cursor 3 "textDocument/diagnostic"

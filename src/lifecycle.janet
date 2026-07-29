@@ -73,10 +73,16 @@
   (put state :document-changes-support
        (not (not (get-in params ["capabilities" "workspace" "workspaceEdit"
                                  "documentChanges"]))))
-  (put state :inlay-parameter-hints
-       (not= false
-             (get-in params
-                      ["initializationOptions" "inlayHints" "parameterNames"])))
+  (put state :inlay-hints
+       @{:parameterNames
+         (not= false (get-in params ["initializationOptions" "inlayHints"
+                                     "parameterNames"]))
+         :constantValues
+         (= true (get-in params ["initializationOptions" "inlayHints"
+                                 "constantValues"]))
+         :returnMetadata
+         (= true (get-in params ["initializationOptions" "inlayHints"
+                                 "returnMetadata"]))})
   (def supplied-code-lenses (get-in params ["initializationOptions" "codeLenses"]))
   (when (dictionary? supplied-code-lenses)
     (eachp [name value] supplied-code-lenses
@@ -146,7 +152,7 @@
        :executeCommandProvider
        {:commands ["janet-lsp.runTest" "janet-lsp.runFlycheck"
                    "janet-lsp.runDefinition"]}
-      :inlayHintProvider (state :inlay-parameter-hints)
+       :inlayHintProvider (any? (values (state :inlay-hints)))
       :workspace {:workspaceFolders {:supported true :changeNotifications true}}}
      :serverInfo (server-meta/server-info)})
   (logging/message result [:initialize])
