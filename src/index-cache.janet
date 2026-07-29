@@ -7,8 +7,9 @@
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
-    (def parent (path/dirname directory))
-    (when (not= parent directory) (ensure-directory parent))
+    (def parent (path/parent directory))
+    (when (and (not (empty? parent)) (not= parent directory))
+      (ensure-directory parent))
     (os/mkdir directory))
   directory)
 

@@ -221,12 +221,16 @@
 
 (deftest "persist and incrementally validate workspace index caches"
   (def root (platform/temp-path (string "janet-lsp-index-cache-" (os/getpid))))
-  (def cache-directory (string root "-data"))
+  (def cache-root (string root "-data"))
+  (def cache-parent (path/join cache-root "missing"))
+  (def cache-directory (path/join cache-parent "nested"))
   (def source-path (path/join root "main.janet"))
   (def added-path (path/join root "added.janet"))
   (def cache-path (path/join cache-directory "index.jdn"))
   (when (os/stat cache-path) (os/rm cache-path))
   (when (os/stat cache-directory) (os/rmdir cache-directory))
+  (when (os/stat cache-parent) (os/rmdir cache-parent))
+  (when (os/stat cache-root) (os/rmdir cache-root))
   (when (os/stat added-path) (os/rm added-path))
   (when (os/stat source-path) (os/rm source-path))
   (when (os/stat root) (os/rmdir root))
@@ -286,7 +290,9 @@
   (test (os/stat cache-path) nil)
   (os/rm source-path)
   (os/rmdir root)
-  (os/rmdir cache-directory))
+  (os/rmdir cache-directory)
+  (os/rmdir cache-parent)
+  (os/rmdir cache-root))
 
 (deftest "partition overlapping workspace indexes by owning root"
   (def parent-uri "file:///workspace")
