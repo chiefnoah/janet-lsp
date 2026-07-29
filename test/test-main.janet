@@ -31,6 +31,22 @@
   (test-error (json/decode "{} trailing")
               "decode error at position 3: unexpected extra token"))
 
+(deftest "match positions against internal and protocol ranges"
+  (def position {:line 8 :character 4})
+  (test (server-utils/position-in-range?
+          position
+          {:start {:line 8 :character 2} :end {:line 8 :character 6}})
+        true)
+  (test (server-utils/position-in-range?
+          position
+          @{"start" @{"line" 8 "character" 2}
+            "end" @{"line" 8 "character" 6}})
+        true)
+  (test (server-utils/position-in-range?
+          position
+          {:start {:line 0 :character 8} :end {:line 0 :character 19}})
+        false))
+
 (deftest "compute exact semantic token deltas"
   (def previous @[0 0 3 4 0 0 4 2 4 0])
   (def current @[0 0 3 4 0 0 4 5 2 1 0 6 2 4 0])

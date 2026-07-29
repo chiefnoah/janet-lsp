@@ -48,14 +48,23 @@
   (and a b (= (a :line) (b :line)) (= (a :character) (b :character))))
 
 (defn position-in-range? [position range]
-  (def start (get range "start"))
-  (def end (get range "end"))
-  (and (or (> (position :line) (get start "line"))
-           (and (= (position :line) (get start "line"))
-                (>= (position :character) (get start "character"))))
-       (or (< (position :line) (get end "line"))
-           (and (= (position :line) (get end "line"))
-                (<= (position :character) (get end "character"))))))
+  (def start (or (get range "start") (get range :start)))
+  (def end (or (get range "end") (get range :end)))
+  (def line (or (get position "line") (get position :line)))
+  (def character (or (get position "character") (get position :character)))
+  (def start-line (and start (or (get start "line") (get start :line))))
+  (def start-character
+    (and start (or (get start "character") (get start :character))))
+  (def end-line (and end (or (get end "line") (get end :line))))
+  (def end-character
+    (and end (or (get end "character") (get end :character))))
+  (and (number? line) (number? character)
+       (number? start-line) (number? start-character)
+       (number? end-line) (number? end-character)
+       (or (> line start-line)
+           (and (= line start-line) (>= character start-character)))
+       (or (< line end-line)
+           (and (= line end-line) (<= character end-character)))))
 
 (defn base-name [name]
   (last (string/split "/" name)))
