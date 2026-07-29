@@ -28,6 +28,8 @@ Format for entires is <version-string> - release date.
   safely supported module file and import-path operations.
 - Added semantic token range and delta requests with stable result IDs and
   expanded identity-aware syntax and binding classification.
+- Added lazy reference, test, flycheck, and runnable-definition code lenses
+  with configurable categories and trust-gated command execution.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

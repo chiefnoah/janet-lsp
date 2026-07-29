@@ -23,6 +23,7 @@
     :folding-line-only false
     :folding-range-limit nil
     :document-link-tooltips false
+    :code-lenses @{:references true :tests true :flycheck true :runnable true}
     :document-changes-support false
     :rename-file-support false
     :workspaces @{}
@@ -75,7 +76,13 @@
   (put state :inlay-parameter-hints
        (not= false
              (get-in params
-                     ["initializationOptions" "inlayHints" "parameterNames"])))
+                      ["initializationOptions" "inlayHints" "parameterNames"])))
+  (def supplied-code-lenses (get-in params ["initializationOptions" "codeLenses"]))
+  (when (dictionary? supplied-code-lenses)
+    (eachp [name value] supplied-code-lenses
+      (def normalized (string name))
+      (when (has-value? ["references" "tests" "flycheck" "runnable"] normalized)
+        (put (state :code-lenses) (keyword normalized) (not= false value)))))
   (def diagnostic-settings
     (configuration/diagnostics
       (get params "initializationOptions" {})))
@@ -135,6 +142,10 @@
         :range true}
        :codeActionProvider
        {:codeActionKinds ["quickfix" "source.sortImports" "source.organizeImports"]}
+       :codeLensProvider {:resolveProvider true}
+       :executeCommandProvider
+       {:commands ["janet-lsp.runTest" "janet-lsp.runFlycheck"
+                   "janet-lsp.runDefinition"]}
       :inlayHintProvider (state :inlay-parameter-hints)
       :workspace {:workspaceFolders {:supported true :changeNotifications true}}}
      :serverInfo (server-meta/server-info)})

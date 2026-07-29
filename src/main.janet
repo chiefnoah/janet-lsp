@@ -6,6 +6,7 @@
 (import ./document-features)
 (import ./call-hierarchy)
 (import ./code-actions)
+(import ./code-lenses)
 (import ./editor-features)
 (import ./lifecycle)
 (import ./logging)
@@ -76,6 +77,7 @@
    "textDocument/semanticTokens/full/delta" true
    "textDocument/semanticTokens/range" true
    "textDocument/codeAction" true
+   "textDocument/codeLens" true
    "textDocument/inlayHint" true
    "textDocument/documentSymbol" true
    "textDocument/documentHighlight" true
@@ -134,6 +136,9 @@
         "textDocument/semanticTokens/range"
         (editor-features/on-semantic-tokens-range state params (get message "id"))
         "textDocument/codeAction" (code-actions/on-code-action state params)
+        "textDocument/codeLens" (code-lenses/on-code-lens state params)
+        "codeLens/resolve" (code-lenses/on-resolve state params)
+        "workspace/executeCommand" (code-lenses/on-execute-command state params)
         "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
 
         "textDocument/definition" (navigation/on-definition state params)

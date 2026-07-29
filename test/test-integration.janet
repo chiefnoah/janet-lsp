@@ -1682,6 +1682,79 @@
   (test (has-value? (map |($ :type) decoded) 9) true)
   (exit-lsp cursor))
 
+(deftest "provide trusted evidence-based code lenses lazily"
+  (def root (temp-directory "janet-lsp-code-lenses"))
+  (def source-path (path/join root "main.janet"))
+  (def source
+    (string "(defn used [] nil)\n"
+            "(used)\n"
+            "(defn main :entry [] nil)\n"
+            "(defn check :flycheck [] nil)\n"
+            "(deftest \"works\" (test true))\n"))
+  (spit source-path source)
+  (def root-uri (uri/path->file-uri root))
+  (def source-uri (uri/path->file-uri source-path))
+  (index-cache/write (index-cache/path-for root-uri) root-uri
+                     index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (def initialized
+    (request cursor 302 "initialize"
+             {:rootUri root-uri
+              :initializationOptions {:trustedWorkspaces [root-uri]}
+              :capabilities {:textDocument {:diagnostic {}}}}))
+  (test (get-in initialized [:result :capabilities :codeLensProvider])
+        @{:resolveProvider true})
+  (open-text-document cursor source-uri source)
+  (def lenses
+    (get-in
+      (request cursor 303 "textDocument/codeLens"
+               {:textDocument {:uri source-uri}})
+      [:result]))
+  (test (all |(nil? ($ :command)) lenses) true)
+  (test (frequencies (map |(get-in $ [:data :kind]) lenses))
+        @{"references" 3 "run" 1 "flycheck" 1 "test" 1})
+  (def reference-lens
+    (first (filter |(and (= "references" (get-in $ [:data :kind]))
+                         (= "used" (get-in $ [:data :name]))) lenses)))
+  (def resolved-reference
+    (get-in (request cursor 304 "codeLens/resolve" reference-lens) [:result]))
+  (test (get-in resolved-reference [:command :title]) "1 reference")
+  (test (get-in resolved-reference [:command :command])
+        "editor.action.showReferences")
+  (test (length (get-in resolved-reference [:command :arguments 2])) 1)
+  (def test-lens (first (filter |(= "test" (get-in $ [:data :kind])) lenses)))
+  (def resolved-test
+    (get-in (request cursor 305 "codeLens/resolve" test-lens) [:result]))
+  (test (get-in resolved-test [:command :command]) "janet-lsp.runTest")
+  (change-text-document cursor source-uri (string source "\n") 2)
+  (test (get-in (request cursor 306 "codeLens/resolve" test-lens)
+                [:result :command])
+        nil)
+  (exit-lsp cursor)
+
+  (def restricted (spawn-lsp))
+  (request restricted 307 "initialize"
+           {:rootUri root-uri
+            :initializationOptions
+            {:codeLenses {:references false :tests false
+                           :flycheck false :runnable false}}
+            :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document restricted source-uri source)
+  (test (get-in
+          (request restricted 308 "textDocument/codeLens"
+                   {:textDocument {:uri source-uri}})
+          [:result])
+        @[])
+  (test (get-in
+          (request restricted 309 "workspace/executeCommand"
+                   {:command "janet-lsp.runDefinition"
+                    :arguments [source-uri "main"]})
+          [:error :code])
+        -32600)
+  (exit-lsp restricted)
+  (remove-tree root))
+
 (deftest "emit conservative configurable parameter hints"
   (def source "(do \"😀\" (put table (put source key value) value) (string a b) (unknown x))")
   (def cursor (start-lsp {:textDocument {:diagnostic {}}}))

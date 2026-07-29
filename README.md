@@ -135,6 +135,30 @@ not include text edits. Disable the category with:
 }
 ```
 
+### Code Lenses
+
+Reference-count lenses are available for static top-level definitions and are
+resolved only when displayed. Trusted workspaces additionally receive run
+lenses for complete top-level tests, functions explicitly tagged `:flycheck`,
+and `main` or `:entry` functions. Run commands revalidate the open document and
+the static lens evidence before starting Janet or Judge; untrusted workspaces
+never receive or execute them.
+
+Categories can be disabled independently at initialization:
+
+```json
+{
+  "initializationOptions": {
+    "codeLenses": {
+      "references": true,
+      "tests": false,
+      "flycheck": false,
+      "runnable": true
+    }
+  }
+}
+```
+
 ### Formatting
 
 Document and range formatting use Janet's canonical formatter, so client tab
