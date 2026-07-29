@@ -34,6 +34,8 @@ Format for entires is <version-string> - release date.
   constant values, and explicit return metadata.
 - Added cooperative cancellation checkpoints, per-request source reuse, bounded
   trusted command execution, and a synthetic large-workspace benchmark.
+- Reported workspace index spawn, scan, parse, and cache failures to clients
+  with workspace context and retry-safe state.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

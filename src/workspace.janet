@@ -97,10 +97,38 @@
       (put workspace :cache-current (loaded :complete)))
     ([err]
       (logging/warn (string "Could not load workspace index cache: " err) [:index])
+      (put workspace :pending-index-failure :cache-load)
       (put workspace :disk-index @{})
       (put workspace :index @{})
       (put workspace :cache-current false)))
   workspace)
+
+(defn- failure-text [workspace stage]
+  (string "Janet LSP could not "
+          (case stage
+            :cache-load "load the workspace index cache"
+            :cache-write "save the workspace index cache"
+            :spawn "start the workspace indexer"
+            :parse "read the workspace indexer result"
+            "build the workspace index")
+          " for " (workspace :uri)
+          ". The server will continue without that index and retry when the workspace is rescanned."))
+
+(defn- report-index-failure [workspace stage &opt warning]
+  (transport/write-frame
+    stdout
+    (rpc/notification
+      {:method "window/logMessage"
+       :params {:type (if warning 2 1)
+                :message (failure-text workspace stage)}}))
+  (put workspace :reported-index-failure stage))
+
+(defn report-pending-index-failures [state]
+  (each workspace (values (state :workspaces))
+    (when-let [stage (workspace :pending-index-failure)]
+      (report-index-failure workspace stage true)
+      (put workspace :pending-index-failure nil)))
+  state)
 
 (defn partition-indexes [state]
   (each workspace (values (state :workspaces))
@@ -130,6 +158,7 @@
   (def requests @[])
   (each workspace workspaces
     (unless (or (workspace :scan) (workspace :cache-current))
+      (put workspace :reported-index-failure nil)
       (def digest (hash (workspace :uri)))
       (def token (string "janet-lsp/index/" digest))
       (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-" digest ".jdn"))
@@ -142,14 +171,22 @@
                         (workspace :cache-path) (workspace :uri)])
           ([err]
             (logging/warn (string/format "Could not start workspace indexer: %s" err)
-                          [:index])
+                           [:index])
+            (report-index-failure workspace :spawn)
             nil)))
       (when process
         (merge-into workspace {:scan-token token
                                :scan-output output
                                :scan process
+                               :scan-status nil
                                :scan-changes @{}
                                :progress-started false})
+        (put workspace :scan-waiter
+             (ev/go
+               (fn []
+                 (def status (os/proc-wait process))
+                 (when (= token (workspace :scan-token))
+                   (put workspace :scan-status status)))))
         (when (state :work-done-progress)
           (def id (string "janet-lsp/progress/create/" digest))
           (put (state :pending-requests) id
@@ -162,29 +199,46 @@
 
 (defn refresh-scans [state]
   (each workspace (values (state :workspaces))
-    (when-let [output (workspace :scan-output)
-               found (os/stat output)]
-      (def result
-        (try (let [parsed (parse (slurp output))]
-               (if (dictionary? parsed)
-                 parsed
-                 {:ok false :error "invalid indexer output"}))
-          ([err] {:ok false :error (string "invalid indexer output: " err)})))
-      (os/rm output)
-      (def status (os/proc-wait (workspace :scan)))
-      (def succeeded (and (= true (result :ok)) (= 0 status)))
+    (when (and (workspace :scan) (number? (workspace :scan-status)))
+      (def output (workspace :scan-output))
+      (def found (and output (os/stat output)))
+      (var result
+        (if found
+          (try (let [parsed (parse (slurp output))]
+               (if (and (dictionary? parsed)
+                        (has-value? [true false] (parsed :ok))
+                        (or (= false (parsed :ok))
+                            (dictionary? (parsed :index))))
+                  parsed
+                  {:ok false :error "invalid indexer output"}))
+            ([err] {:ok false :error (string "invalid indexer output: " err)}))
+          {:ok false :error "indexer produced no output"}))
+      (when found (os/rm output))
+      (def status (workspace :scan-status))
+      (var succeeded (and (= true (result :ok)) (= 0 status)))
       (when succeeded
-        (def disk-index (result :index))
-        (merge-scan-changes disk-index (workspace :scan-changes))
-        (put workspace :disk-index disk-index)
-        (put workspace :index (copy-index (workspace :disk-index)))
-        (def cached
-          (try
-            (index-cache/write (workspace :cache-path) (workspace :uri)
-                               (workspace :exclusions) disk-index)
-            ([_] false)))
-        (put workspace :cache-current cached))
+        (try
+          (do
+            (def disk-index (result :index))
+            (merge-scan-changes disk-index (workspace :scan-changes))
+            (put workspace :disk-index disk-index)
+            (put workspace :index (copy-index (workspace :disk-index)))
+            (index/relink workspace)
+            (def cached
+              (try
+                (index-cache/write (workspace :cache-path) (workspace :uri)
+                                   (workspace :exclusions) disk-index)
+                ([_] false)))
+            (put workspace :cache-current cached)
+            (if cached
+              (put workspace :reported-index-failure nil)
+              (report-index-failure workspace :cache-write true)))
+          ([err]
+            (set succeeded false)
+            (set result {:ok false :error (string "invalid indexer output: " err)}))))
       (put workspace :scan nil)
+      (put workspace :scan-status nil)
+      (put workspace :scan-waiter nil)
       (put workspace :scan-output nil)
       (put workspace :scan-changes nil)
       (if succeeded
@@ -198,7 +252,14 @@
       (unless succeeded
         (logging/warn (string "Workspace index failed: "
                               (or (result :error) (string "exit status " status)))
-                      [:index]))
+                       [:index]))
+      (unless succeeded
+        (report-index-failure
+          workspace
+          (if (string/has-prefix? "invalid indexer output"
+                                  (or (result :error) ""))
+            :parse
+            :scan)))
       (when (workspace :progress-started)
         (progress (workspace :scan-token)
                   {:kind "end"
@@ -213,9 +274,12 @@
 
 (defn- stop-scan [workspace]
   (when (workspace :scan)
-    (try (os/proc-kill (workspace :scan) true) ([_] nil)))
+    (try (os/proc-kill (workspace :scan) false) ([_] nil)))
   (remove-scan-files workspace)
   (put workspace :scan nil)
+  (put workspace :scan-token nil)
+  (put workspace :scan-status nil)
+  (put workspace :scan-waiter nil)
   (put workspace :scan-output nil)
   (put workspace :scan-changes nil))
 
@@ -273,7 +337,9 @@
         (unless (workspace :scan) (put workspace :cache-current cached)))
       ([err]
         (logging/warn (string "Could not update workspace index cache: " err)
-                      [:index]))))
+                      [:index])
+        (put workspace :cache-current false)
+        (report-index-failure workspace :cache-write true))))
   (partition-indexes state)
   (reanalyze-open-documents state)
   [:noresponse state])
@@ -336,6 +402,9 @@
         (configure root-uri (state :trusted-workspaces)
                    (state :diagnostic-settings) (state :diagnostic-generation)))
       (load-cache configured)
+      (when (configured :pending-index-failure)
+        (report-index-failure configured (configured :pending-index-failure) true)
+        (put configured :pending-index-failure nil))
       (put (state :workspaces) root-uri configured)
       (array/push added configured)))
   (partition-indexes state)

@@ -114,6 +114,9 @@ startup index subprocess entirely.
 Watched-file notifications update the in-memory and persisted disk index
 atomically. Corrupt or incompatible cache files are discarded, and open-buffer
 records remain separate so unsaved source is never persisted as a disk record.
+Indexer startup, scan, result parsing, and cache failures are reported through
+`window/logMessage` with the affected workspace URI. Detailed internal errors
+remain in server logs so client notifications do not expose source text.
 
 An open document outside all configured file workspaces is treated as a
 standalone file. It retains parsing, core documentation, hover, signature, and

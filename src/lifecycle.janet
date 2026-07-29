@@ -159,6 +159,7 @@
   [:ok state result])
 
 (defn on-initialized [state]
+  (workspace/report-pending-index-failures state)
   (def requests
     (array ;(workspace/start-scans state)
            ;(workspace/trust-requests state (values (state :workspaces)))))
