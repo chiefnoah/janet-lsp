@@ -1,6 +1,7 @@
 (import ./diagnostics)
 (import ./index)
 (import ./parser)
+(import ./semantic-tokens)
 (import ./signatures)
 
 (def max-snapshots 4)
@@ -12,39 +13,6 @@
   (string (workspace :diagnostic-generation) ":"
           (or (workspace :index-generation) 0) ":" snapshot-key ":"
           (index/content-hash (string/format "%j" items))))
-
-(defn- semantic-records [record env]
-  (def definitions (record :definitions))
-  (def records @[])
-  (each definition definitions
-    (array/push records {:range (definition :selection-range)
-                         :type (if (= 12 (definition :kind)) 2 4)
-                         :modifiers 3})
-    (each parameter (definition :children)
-      (array/push records {:range (parameter :selection-range)
-                           :type 5 :modifiers 1})))
-  (each reference (record :references)
-    (def range (reference :range))
-    (unless (any? (map |(deep= range ($ :range)) records))
-      (def name (reference :name))
-      (def definition (first (filter |(= name ($ :name)) definitions)))
-      (def binding (get env (symbol name) nil))
-      (array/push records
-                  {:range range
-                   :type (cond
-                           (string/has-prefix? ":" name) 6
-                           (scan-number name) 8
-                           (string/find "/" name) 0
-                           definition (if (= 12 (definition :kind)) 2 4)
-                           (and binding (binding :macro)) 3
-                           (and binding
-                                (has-value? [:function :cfunction]
-                                            (type (binding :value)))) 2
-                           4)
-                   :modifiers 0})))
-  (sort-by |[(get-in $ [:range :start :line])
-             (get-in $ [:range :start :character])]
-           records))
 
 (defn build [document workspace encoding]
   (let [content (document :content)
@@ -58,6 +26,7 @@
     {:key (key version content)
      :version version
      :content-hash (index/content-hash content)
+      :source content
      :workspace-uri (workspace :uri)
      :trusted (workspace :trusted)
      :diagnostic-generation (workspace :diagnostic-generation)
@@ -69,7 +38,7 @@
      :eval-env env
      :index record
      :references (record :references)
-     :semantic (semantic-records record env)}))
+      :semantic (semantic-tokens/records record env content)}))
 
 (defn current [document workspace]
   (def snapshot (document :analysis))
@@ -120,7 +89,10 @@
   (replace-record workspace (document :uri) (snapshot :index))
   (def installed
     (merge snapshot
-           {:index-generation (or (workspace :index-generation) 0)
+            {:index-generation (or (workspace :index-generation) 0)
+             :semantic (semantic-tokens/records
+                         (snapshot :index) (snapshot :eval-env)
+                         (snapshot :source) workspace)
             :diagnostic-result-id
             (diagnostic-result-id workspace (snapshot :key)
                                   (snapshot :diagnostics))}))

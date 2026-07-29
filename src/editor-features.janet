@@ -5,6 +5,7 @@
 (import ./lookup)
 (import ./position)
 (import ./server-utils)
+(import ./semantic-tokens)
 (import ./signatures)
 
 (defn binding-to-lsp-item
@@ -108,27 +109,55 @@
           :activeSignature 0
           :activeParameter active}]))))
 
-(defn on-semantic-tokens-full [state params]
+(defn- semantic-data [state params request-id &opt requested]
   (def document (server-utils/document state params))
-  (def data @[])
-  (var previous-line 0)
-  (var previous-character 0)
-  (each token (get-in document [:analysis :semantic] @[])
-    (def range (server-utils/lsp-range state (document :content) (token :range)))
-    (def start (range :start))
-    (def end (range :end))
-    (when (and start end (= (start :line) (end :line))
-               (> (end :character) (start :character)))
-      (def delta-line (- (start :line) previous-line))
-      (def delta-character (if (= delta-line 0)
-                             (- (start :character) previous-character)
-                             (start :character)))
-      (array/concat data [delta-line delta-character
-                          (- (end :character) (start :character))
-                          (token :type) (token :modifiers)])
-      (set previous-line (start :line))
-      (set previous-character (start :character))))
-  [:ok state {:data data}])
+  (def workspace (server-utils/document-workspace state document))
+  (def snapshot (or (analysis/current document workspace)
+                    (analysis/refresh document workspace
+                                      (state :position-encoding))))
+  (if (and request-id (has-key? (state :cancelled-requests) request-id))
+    [:cancelled]
+    [:ok (semantic-tokens/encode state (document :content)
+                                 (snapshot :semantic) requested request-id)]))
+
+(defn- remember-semantic-result [state result-id data]
+  (unless (get (state :semantic-token-results) result-id)
+    (put (state :semantic-token-results) result-id data)
+    (array/push (state :semantic-token-order) result-id))
+  (while (> (length (state :semantic-token-order)) 16)
+    (def oldest ((state :semantic-token-order) 0))
+    (array/remove (state :semantic-token-order) 0)
+    (put (state :semantic-token-results) oldest nil)))
+
+(defn on-semantic-tokens-full [state params request-id]
+  (match (semantic-data state params request-id)
+    [:cancelled] [:rpc-error state -32800 "Request cancelled"]
+    [:ok data]
+    (let [document (server-utils/document state params)
+          result-id (semantic-tokens/result-id (document :analysis)
+                                               (state :position-encoding) data)]
+      (remember-semantic-result state result-id data)
+      [:ok state {:data data :resultId result-id}])))
+
+(defn on-semantic-tokens-delta [state params request-id]
+  (match (semantic-data state params request-id)
+    [:cancelled] [:rpc-error state -32800 "Request cancelled"]
+    [:ok data]
+    (let [document (server-utils/document state params)
+          result-id (semantic-tokens/result-id (document :analysis)
+                                               (state :position-encoding) data)
+          previous (get (state :semantic-token-results)
+                        (get params "previousResultId"))]
+      (remember-semantic-result state result-id data)
+      (if previous
+        [:ok state {:resultId result-id
+                    :edits (semantic-tokens/delta previous data)}]
+        [:ok state {:resultId result-id :data data}]))))
+
+(defn on-semantic-tokens-range [state params request-id]
+  (match (semantic-data state params request-id (get params "range"))
+    [:cancelled] [:rpc-error state -32800 "Request cancelled"]
+    [:ok data] [:ok state {:data data}]))
 
 (defn on-inlay-hint [state params]
   (if (not (state :inlay-parameter-hints))

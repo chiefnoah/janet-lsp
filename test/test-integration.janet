@@ -1586,7 +1586,10 @@
         {:textDocument {:diagnostic {}}}))
     (def cursor (start-lsp capabilities))
     (test (get-in (cursor :initialize)
-                  [:result :capabilities :semanticTokensProvider :full])
+                   [:result :capabilities :semanticTokensProvider :full])
+          @{:delta true})
+    (test (get-in (cursor :initialize)
+                  [:result :capabilities :semanticTokensProvider :range])
           true)
     (notify cursor "textDocument/didOpen"
             {:textDocument {:uri document-uri :languageId "janet" :version 1
@@ -1595,14 +1598,89 @@
       (request cursor 117 "textDocument/semanticTokens/full"
                {:textDocument {:uri document-uri}}))
     (def data (get-in response [:result :data]))
+    (def result-id (get-in response [:result :resultId]))
+    (test (string? result-id) true)
     (test (= 0 (% (length data) 5)) true)
     (test (all |(>= $ 0)
                (map |(data $) (range 0 (length data) 5)))
           true)
     (test (has-value? (map |(data (+ $ 2)) (range 0 (length data) 5))
-                      (if (= encoding "utf-8") 4 2))
+                       (if (= encoding "utf-8") 4 2))
           true)
+    (def unchanged
+      (request cursor 297 "textDocument/semanticTokens/full/delta"
+               {:textDocument {:uri document-uri}
+                :previousResultId result-id}))
+    (test (get-in unchanged [:result :edits]) @[])
+    (test (= (get-in unchanged [:result :resultId]) result-id) true)
+    (def ranged-response
+      (request cursor 298 "textDocument/semanticTokens/range"
+               {:textDocument {:uri document-uri}
+                :range {:start {:line 1 :character 0}
+                        :end {:line 2 :character 0}}}))
+    (def ranged (get-in ranged-response [:result :data]))
+    (test (ranged 0) 1)
+    (test (all |(= 0 (ranged $)) (range 5 (length ranged) 5)) true)
+    (def overlapping
+      (get-in
+        (request cursor 301 "textDocument/semanticTokens/range"
+                 {:textDocument {:uri document-uri}
+                  :range {:start {:line 1 :character 1}
+                          :end {:line 1 :character 2}}})
+        [:result :data]))
+    (test (overlapping 0) 1)
+    (test (overlapping 1) 0)
+
+    (change-text-document cursor document-uri
+                          "(def 😀 2)\n😀 # hidden\n\"hidden\"\n" 2)
+    (def changed
+      (get-in
+        (request cursor 299 "textDocument/semanticTokens/full/delta"
+                 {:textDocument {:uri document-uri}
+                  :previousResultId result-id})
+        [:result]))
+    (test (string? (changed :resultId)) true)
+    # Token positions and classifications are unchanged when only a literal changes.
+    (test (changed :edits) @[])
     (exit-lsp cursor)))
+
+(deftest "classify semantic definitions bindings and syntax"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source
+    (string "(import ./module :as mod)\n"
+            "(defmacro m [] nil)\n"
+            "(defn run [arg] (let [local 1] (+ arg local)))\n"
+            "(m) \"text\" # comment\n"
+            "\"multi\nline\"\n"))
+  (open-text-document cursor document-uri source)
+  (def classified-response
+    (request cursor 300 "textDocument/semanticTokens/full"
+             {:textDocument {:uri document-uri}}))
+  (def data (get-in classified-response [:result :data]))
+  (def decoded @[])
+  (var line 0)
+  (var character 0)
+  (each index (range 0 (length data) 5)
+    (def delta-line (data index))
+    (set line (+ line delta-line))
+    (set character (if (= delta-line 0)
+                     (+ character (data (inc index)))
+                     (data (inc index))))
+    (array/push decoded
+                {:line line :character character
+                 :length (data (+ index 2)) :type (data (+ index 3))
+                 :modifiers (data (+ index 4))}))
+  (test (has-value? (map |[($ :line) ($ :type)] decoded) [0 0]) true)
+  (test (has-value? (map |[($ :line) ($ :type) ($ :modifiers)] decoded)
+                    [1 3 3])
+        true)
+  (test (length (filter |(= 5 ($ :type)) decoded)) 2)
+  (test (length (filter |(and (= 5 ($ :type)) (= 1 ($ :modifiers))) decoded)) 1)
+  (test (has-value? (map |[($ :type) ($ :modifiers)] decoded) [4 1]) true)
+  (test (has-value? (map |($ :type) decoded) 10) true)
+  (test (>= (length (filter |(= 7 ($ :type)) decoded)) 3) true)
+  (test (has-value? (map |($ :type) decoded) 9) true)
+  (exit-lsp cursor))
 
 (deftest "emit conservative configurable parameter hints"
   (def source "(do \"😀\" (put table (put source key value) value) (string a b) (unknown x))")

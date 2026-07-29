@@ -15,6 +15,7 @@
 (import ../src/transport)
 (import ../src/uri)
 (import ../src/server-utils)
+(import ../src/semantic-tokens)
 (import ../src/signatures)
 (import ../src/static-diagnostics)
 (import ../src/workspace)
@@ -28,6 +29,20 @@
               "decode error at position 0: unexpected character")
   (test-error (json/decode "{} trailing")
               "decode error at position 3: unexpected extra token"))
+
+(deftest "compute exact semantic token deltas"
+  (def previous @[0 0 3 4 0 0 4 2 4 0])
+  (def current @[0 0 3 4 0 0 4 5 2 1 0 6 2 4 0])
+  (def edits (semantic-tokens/delta previous current))
+  (test (length edits) 1)
+  (def edit (edits 0))
+  (def applied
+    (array
+      ;(array/slice previous 0 (edit :start))
+      ;(edit :data)
+      ;(array/slice previous (+ (edit :start) (edit :deleteCount)))))
+  (test (deep= applied current) true)
+  (test (semantic-tokens/delta current current) @[]))
 
 (deftest "select configured debug ports"
   (test (logging/debug-port nil) "8037")

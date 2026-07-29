@@ -73,6 +73,8 @@
    "textDocument/prepareRename" true
    "textDocument/rename" true
    "textDocument/semanticTokens/full" true
+   "textDocument/semanticTokens/full/delta" true
+   "textDocument/semanticTokens/range" true
    "textDocument/codeAction" true
    "textDocument/inlayHint" true
    "textDocument/documentSymbol" true
@@ -126,7 +128,11 @@
         "textDocument/hover" (editor-features/on-hover state params)
         "textDocument/signatureHelp" (editor-features/on-signature-help state params)
         "textDocument/semanticTokens/full"
-        (editor-features/on-semantic-tokens-full state params)
+        (editor-features/on-semantic-tokens-full state params (get message "id"))
+        "textDocument/semanticTokens/full/delta"
+        (editor-features/on-semantic-tokens-delta state params (get message "id"))
+        "textDocument/semanticTokens/range"
+        (editor-features/on-semantic-tokens-range state params (get message "id"))
         "textDocument/codeAction" (code-actions/on-code-action state params)
         "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
 

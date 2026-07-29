@@ -13,6 +13,8 @@
     :trace "off"
     :pending-requests @{}
     :cancelled-requests @{}
+    :semantic-token-results @{}
+    :semantic-token-order @[]
     :trusted-workspaces @[]
     :diagnostic-settings diagnostic-settings
     :diagnostic-generation 0
@@ -126,10 +128,11 @@
       :documentLinkProvider {:resolveProvider false}
       :callHierarchyProvider true
       :renameProvider {:prepareProvider true}
-      :semanticTokensProvider
+       :semanticTokensProvider
       {:legend {:tokenTypes server-meta/semantic-token-types
                 :tokenModifiers server-meta/semantic-token-modifiers}
-       :full true}
+        :full {:delta true}
+        :range true}
        :codeActionProvider
        {:codeActionKinds ["quickfix" "source.sortImports" "source.organizeImports"]}
       :inlayHintProvider (state :inlay-parameter-hints)

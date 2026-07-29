@@ -21,7 +21,8 @@ The goal of this project is to provide an augmented editor/tooling experience fo
   and links for indexed modules and explicit source paths
 - Binding-aware incoming and outgoing call hierarchy for functions, macros,
   imports, recursion, and local lambdas
-- Full-document semantic tokens and deterministic diagnostic quick fixes
+- Full, incremental, and range semantic tokens with stable result IDs, plus
+  deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis
 - Bounded versioned analysis snapshots shared across language features
