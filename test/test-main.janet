@@ -554,6 +554,30 @@
                (index/outgoing-calls named-workspace (callable :identity)))
           @["inner"])))
 
+(deftest "reindex calls after editing a function"
+  (def document-uri "file:///edited-function.janet")
+  (def workspace @{:index @{}})
+  (index/update workspace document-uri
+                (string "(defn before [] nil)\n"
+                        "(defn after [] nil)\n"
+                        "(defn caller [] (before))\n"))
+  (def callable
+    (first (filter |(= "caller" ($ :name)) (index/callables workspace))))
+  (test (map |($ :name) (index/outgoing-calls workspace (callable :identity)))
+        @["before"])
+
+  (index/update workspace document-uri
+                (string "(defn before [] nil)\n"
+                        "(defn after [] nil)\n"
+                        "(defn caller [] (after))\n"))
+  (def updated
+    (first (filter |(= "caller" ($ :name)) (index/callables workspace))))
+  (test (map |($ :name) (index/outgoing-calls workspace (updated :identity)))
+        @["after"])
+  (def before
+    (first (filter |(= "before" ($ :name)) (index/callables workspace))))
+  (test (index/incoming-calls workspace (before :identity)) @[]))
+
 (deftest "resolve explicit type and implementation metadata"
   (def document-uri "file:///navigation-metadata.janet")
   (def record
