@@ -47,6 +47,10 @@ Format for entires is <version-string> - release date.
 - Document and workspace pull diagnostics now provide deterministic result IDs,
   unchanged reports, closed-file analysis, open-buffer overlays, cancellation,
   and client refresh requests after configuration changes.
+- Completion now distinguishes module paths, aliases and exports, binding,
+  keyword, table-key, and metadata contexts. It adds capability-gated Janet
+  snippets, scope/module/usage ranking, and unique missing-import edits while
+  excluding private exports and stale or overlapping edits.
 
 ## 0.0.11 - 2026-02-14
 

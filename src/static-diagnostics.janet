@@ -185,40 +185,28 @@
   ranges)
 
 (defn- resolution [workspace record name position]
-  (def parts (string/split "/" name))
-  (if (> (length parts) 1)
-    (let [prefix (first parts)
-          target-name (last parts)
-          imported (first (filter |(= prefix ($ :alias)) (record :imports)))
-          target-uri (and imported
-                          (index/module-uri workspace (record :uri)
-                                            (imported :module)))]
-      (cond
-        (nil? imported) :undefined
-        (and (not (empty? (imported :only)))
-             (not (has-value? (imported :only) target-name))) :undefined
-        target-uri (if (index/exported-definition workspace target-uri target-name @{})
-                     :defined
-                     :undefined)
-        :unknown))
-    (if (local-definition record name position)
-      :defined
-      (let [uses (filter |(and (= "use" ($ :kind))
-                               (or (empty? ($ :only))
-                                   (has-value? ($ :only) name)))
-                         (record :imports))]
-        (if (empty? uses)
-          :undefined
-          (do
-            (var unknown false)
-            (var defined false)
-            (each imported uses
-              (if-let [target-uri
-                       (index/module-uri workspace (record :uri) (imported :module))]
-                (when (index/exported-definition workspace target-uri name @{})
-                  (set defined true))
-                (set unknown true)))
-            (cond defined :defined unknown :unknown :undefined)))))))
+  (if (local-definition record name position)
+    :defined
+    (do
+      (var matched false)
+      (var unknown false)
+      (var defined false)
+      (each imported (record :imports)
+        (when (and (imported :top-level)
+                   (before? (get-in imported [:range :end]) position)
+                   (has-value? ["import" "import*" "use"] (imported :kind))
+                   (string/has-prefix? (imported :prefix) name))
+          (def target-name (string/slice name (length (imported :prefix))))
+          (when (and (not (empty? target-name))
+                     (or (empty? (imported :only))
+                         (has-value? (imported :only) target-name)))
+            (set matched true)
+            (if-let [target-uri
+                     (index/module-uri workspace (record :uri) (imported :module))]
+              (when (index/exported-definition workspace target-uri target-name @{})
+                (set defined true))
+              (set unknown true)))))
+      (cond defined :defined unknown :unknown matched :undefined :undefined))))
 
 (defn- undefined-diagnostics [source record workspace env declarations ignored]
   (def overlay @{})

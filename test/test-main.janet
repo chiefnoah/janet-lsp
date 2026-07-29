@@ -126,7 +126,7 @@
   (index/update workspace "file:///workspace/value.janet"
                 "(def shared 1)\nshared\n")
   (index/update workspace "file:///workspace/middle.janet"
-                "(use ./value :only [shared] :export true)\n")
+                "(import ./value :only [shared] :prefix \"\" :export true)\n")
   (index/update workspace "file:///workspace/main.janet"
                 "(import ./middle :as module)\nmodule/shared\n")
   (def definition
@@ -145,6 +145,63 @@
   (index/add-generated workspace "file:///tmp/generated-index.janet" generated-env)
   (test (get-in (first (index/definitions workspace "generated-value")) [:generated])
         true))
+
+(deftest "enumerate public module exports and re-exports"
+  (def base-uri "file:///workspace/base.janet")
+  (def middle-uri "file:///workspace/middle.janet")
+  (def workspace
+    @{:index
+      @{base-uri
+        (index/analyze
+          base-uri
+          (string "(def public 1)\n"
+                  "(def private :private 2)\n"
+                  "(defn- hidden [] nil)\n"
+                  "(def omitted 3)\n"))
+        middle-uri
+        (index/analyze
+          middle-uri
+          "(import ./base :only [public] :prefix \"\" :export true)\n")}})
+  (test (map |($ :name) (index/exported-definitions workspace base-uri))
+        @["public" "omitted"])
+  (test (map |($ :name) (index/exported-definitions workspace middle-uri))
+        @["public"])
+  (test (index/exported-definition workspace base-uri "private" @{}) nil)
+  (def imports
+    (index/analyze
+      "file:///workspace/imports.janet"
+      (string "(import ./base :prefix \"m-\")\n"
+              "(use ./base ./middle)\n"
+              "(import ./base.janet)\n"
+              "(import ./base :as chosen :prefix \"ignored-\" :export 1)\n")))
+  (test (map |[($ :module) ($ :prefix)] (imports :imports))
+        @[["./base" "m-"] ["./base" ""] ["./middle" ""]
+          ["./base.janet" "base/"] ["./base" "chosen/"]])
+  (test (get-in imports [:imports 4 :export]) true)
+
+  (def before-uri "file:///workspace/before.janet")
+  (def nested-uri "file:///workspace/nested.janet")
+  (put (workspace :index) before-uri
+       (index/analyze before-uri "public\n(import ./base :prefix \"\")\n"))
+  (put (workspace :index) nested-uri
+       (index/analyze nested-uri
+                      "(defn load [] (import ./base :prefix \"\"))\npublic\n"))
+  (test (index/resolve-definition workspace before-uri "public"
+                                  {:line 0 :character 0})
+        nil)
+  (test (get-in (index/resolve-definition workspace before-uri "public"
+                                           {:line 2 :character 0})
+                [:name])
+        "public")
+  (test (index/resolve-definition workspace nested-uri "public"
+                                  {:line 1 :character 0})
+        nil)
+  (test (index/resolve-definition workspace before-uri "base/public"
+                                  {:line 0 :character 0})
+        nil)
+  (test (index/resolve-definition workspace nested-uri "base/public"
+                                  {:line 1 :character 0})
+        nil))
 
 (deftest "persist and incrementally validate workspace index caches"
   (def root (string "/tmp/janet-lsp-index-cache-" (os/getpid)))

@@ -5,13 +5,15 @@
 (defn lookup [{:line line :character character} source]
   (string/from-bytes (((string/split "\n" source) line) character)))
 
-(defn code-mask [source]
-  "Replace strings and comments with spaces while preserving byte offsets and newlines."
+(defn- mask-source [source retain-string?]
   (def bytes (string/bytes source))
   (def masked @"")
   (var state :code)
   (var escaped false)
-  (each byte bytes
+  (var delimiter 0)
+  (var index 0)
+  (while (< index (length bytes))
+    (def byte (bytes index))
     (case state
       :comment
       (if (= byte 10)
@@ -26,36 +28,46 @@
         (= byte 34) (do (buffer/push-byte masked 32) (set state :code))
         (buffer/push-byte masked 32))
 
+      :long-string
+      (if (= byte 96)
+        (do
+          (var count 0)
+          (while (and (< (+ index count) (length bytes))
+                      (= 96 (bytes (+ index count))))
+            (+= count 1))
+          (def consumed (if (>= count delimiter) delimiter count))
+          (for _ 0 consumed (buffer/push-byte masked 32))
+          (when (>= count delimiter) (set state :code))
+          (+= index (dec consumed)))
+        (buffer/push-byte masked (if (= byte 10) 10 32)))
+
       (cond
         (= byte 35) (do (buffer/push-byte masked 32) (set state :comment))
-        (= byte 34) (do (buffer/push-byte masked 32) (set state :string))
-        (buffer/push-byte masked byte))))
+        (= byte 34)
+        (do (buffer/push-byte masked (if retain-string? 120 32))
+            (set state :string))
+        (= byte 96)
+        (do
+          (var count 0)
+          (while (and (< (+ index count) (length bytes))
+                      (= 96 (bytes (+ index count))))
+            (+= count 1))
+          (buffer/push-byte masked (if retain-string? 120 32))
+          (for _ 1 count (buffer/push-byte masked 32))
+          (set delimiter count)
+          (set state :long-string)
+          (+= index (dec count)))
+        (buffer/push-byte masked byte)))
+    (+= index 1))
   (string masked))
+
+(defn code-mask [source]
+  "Replace strings and comments with spaces while preserving byte offsets and newlines."
+  (mask-source source false))
 
 (defn structure-mask [source]
   "Mask comments and string contents, retaining one placeholder per string form."
-  (def bytes (string/bytes source))
-  (def masked @"")
-  (var state :code)
-  (var escaped false)
-  (each byte bytes
-    (case state
-      :comment
-      (if (= byte 10)
-        (do (buffer/push-byte masked byte) (set state :code))
-        (buffer/push-byte masked 32))
-      :string
-      (cond
-        (= byte 10) (buffer/push-byte masked byte)
-        escaped (do (buffer/push-byte masked 32) (set escaped false))
-        (= byte 92) (do (buffer/push-byte masked 32) (set escaped true))
-        (= byte 34) (do (buffer/push-byte masked 32) (set state :code))
-        (buffer/push-byte masked 32))
-      (cond
-        (= byte 35) (do (buffer/push-byte masked 32) (set state :comment))
-        (= byte 34) (do (buffer/push-byte masked 120) (set state :string))
-        (buffer/push-byte masked byte))))
-  (string masked))
+  (mask-source source true))
 
 (defn call-context [location source]
   (def cursor (to-index location source))

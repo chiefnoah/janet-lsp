@@ -17,7 +17,7 @@
   (def resolved (and (not (empty? name))
                      (parser/definition-at location content name)))
   (def indexed (and (not (empty? name))
-                    (index/resolve-definition workspace document-uri name)))
+                    (index/resolve-definition workspace document-uri name location)))
   (def indexed-local?
     (and resolved indexed
          (server-utils/same-position?

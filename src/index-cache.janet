@@ -2,7 +2,7 @@
 (import ./uri)
 (import spork/path)
 
-(def format-version 1)
+(def format-version 2)
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
@@ -57,6 +57,7 @@
        (string? (definition :name))
        (number? (definition :kind))
        (string? (definition :form))
+       (has-value? [true false] (definition :private))
        (range? (definition :range))
        (range? (definition :selection-range))
        (indexed? (definition :children))
@@ -78,8 +79,10 @@
        (string? (imported :module))
        (string? (imported :kind))
        (string? (imported :alias))
+       (string? (imported :prefix))
        (indexed? (imported :only))
        (all string? (imported :only))
+       (has-value? [true false] (imported :top-level))
        (range? (imported :range))))
 
 (defn- record? [record document-uri]

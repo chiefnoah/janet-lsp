@@ -29,6 +29,8 @@
   (test (get-in initialize [:result :serverInfo :name]) "janet-lsp")
   (test (get-in initialize [:result :capabilities :positionEncoding]) "utf-16")
   (test (get-in initialize [:result :capabilities :completionProvider :resolveProvider]) true)
+  (test (get-in initialize [:result :capabilities :completionProvider :triggerCharacters])
+        @["/" ":" "." "\""])
   (test (get-in initialize
                 [:result :capabilities :diagnosticProvider :workspaceDiagnostics])
         true)
@@ -707,7 +709,7 @@
                           :text "(def shared 1)\nshared\n"}})
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri second-uri :languageId "janet" :version 1
-                          :text "(import ./main)\nmain/shared\n"}})
+                          :text "(import ./format-file-after)\nformat-file-after/shared\n"}})
   (def local
     (request cursor 104 "textDocument/definition"
              {:textDocument {:uri document-uri}
@@ -717,7 +719,7 @@
   (def imported
     (request cursor 105 "textDocument/definition"
              {:textDocument {:uri second-uri}
-              :position {:line 1 :character 6}}))
+              :position {:line 1 :character 18}}))
   (test (= (get-in imported [:result :uri]) document-uri) true)
 
   (notify cursor "textDocument/didChange"
@@ -1121,7 +1123,8 @@
   (def module-path (path/join root "module.janet"))
   (def main-path (path/join root "main.janet"))
   (def module-source "(def exported 1)\n")
-  (def main-source "(use ./module :only [exported])\nexported\n")
+  (def main-source
+    "(import ./module :only [exported] :prefix \"\")\nexported\n")
   (spit module-path module-source)
   (spit main-path main-source)
   (def root-uri (uri/path->file-uri root))
@@ -1379,6 +1382,213 @@
   (test (string/has-prefix? "cfunction"
                             (get-in response [:result :documentation :value]))
         true))
+
+(deftest "complete syntax, modules, members, and missing imports by context"
+  (def root (temp-directory "janet-lsp-context-completion"))
+  (def module-path (path/join root "module.janet"))
+  (def main-path (path/join root "main.janet"))
+  (spit module-path
+        (string "(defn exported [value] value)\n"
+                "(def other :custom 1)\n"
+                "(def secret :private 2)\n"
+                "(def ambiguous 3)\n"
+                "(defn- hidden [] nil)\n"))
+  (spit (path/join root "other.janet") "(def ambiguous 4)\n")
+  (spit (path/join root "second.janet") "(def second-export 5)\n")
+  (spit (path/join root "my module.janet") "(def spaced-export 6)\n")
+  (spit main-path "")
+  (def root-uri (uri/path->file-uri root))
+  (def main-uri (uri/path->file-uri main-path))
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 167 "initialize"
+           {:rootUri root-uri
+            :capabilities
+            {:textDocument
+             {:diagnostic {}
+              :completion {:completionItem {:snippetSupport true}}}}})
+
+  (var completion-version 0)
+  (defn complete [id source line character]
+    (+= completion-version 1)
+    (if (get-in cursor [:completion-document-open])
+      (change-text-document cursor main-uri source completion-version)
+      (do
+        (open-text-document cursor main-uri source completion-version)
+        (put cursor :completion-document-open true)))
+    (get-in (request cursor id "textDocument/completion"
+                     {:textDocument {:uri main-uri}
+                      :position {:line line :character character}})
+            [:result :items]))
+
+  (def import-items (complete 168 "(import ./mo)" 0 12))
+  (test (has-value? (map |($ :label) import-items) "./module") true)
+  (def require-items (complete 169 "(require \"./mo\")" 0 14))
+  (test (has-value? (map |($ :label) require-items) "./module") true)
+  (def require-item (first (filter |(= "./module" ($ :label)) require-items)))
+  (test (get-in require-item [:textEdit :range :start :character]) 10)
+  (test (get-in require-item [:textEdit :range :end :character]) 14)
+  (def dofile-items (complete 170 "(dofile \"./mo\")" 0 13))
+  (test (has-value? (map |($ :label) dofile-items) "./module.janet") true)
+  (def use-items (complete 171 "(use ./mo)" 0 9))
+  (test (has-value? (map |($ :label) use-items) "./module") true)
+  (def spaced-module-items (complete 210 "(import ./my)" 0 12))
+  (def spaced-module
+    (first (filter |(= "./my module" ($ :label)) spaced-module-items)))
+  (test (get-in spaced-module [:textEdit :newText]) "\"./my module\"")
+  (def quoted-spaced-items (complete 211 "(require \"./my\")" 0 14))
+  (def quoted-spaced
+    (first (filter |(= "./my module" ($ :label)) quoted-spaced-items)))
+  (test (get-in quoted-spaced [:textEdit :newText]) "./my module")
+
+  (def member-source "(import ./module :as module)\nmodule/ex\n")
+  (def member-items (complete 172 member-source 1 9))
+  (test (has-value? (map |($ :label) member-items) "module/exported") true)
+  (test (has-value? (map |($ :label) member-items) "module/hidden") false)
+  (test (has-value? (map |($ :label) member-items) "module/secret") false)
+  (def alias-items (complete 182 "(import ./module :as module)\nmod\n" 1 3))
+  (test (has-value? (map |($ :label) alias-items) "module") false)
+  (def used-items
+    (complete 183 "(use ./module)\nexp\n" 1 3))
+  (def used-item (first (filter |(= "exported" ($ :label)) used-items)))
+  (test (string/has-prefix? "Imported from" (used-item :detail)) true)
+  (test (get used-item :additionalTextEdits) nil)
+  (def multi-use-items
+    (complete 199 "(use ./module ./second)\nsecond\n" 1 6))
+  (test (has-value? (map |($ :label) multi-use-items) "second-export") true)
+  (def prefixed-items
+    (complete 200 "(import ./module :prefix \"m-\")\nm-ex\n" 1 4))
+  (test (has-value? (map |($ :label) prefixed-items) "m-exported") true)
+  (test (has-value? (map |($ :label) prefixed-items) "module/exported") false)
+  (def unprefixed-items
+    (complete 201 "(import ./module :prefix \"\")\nexp\n" 1 3))
+  (test (has-value? (map |($ :label) unprefixed-items) "exported") true)
+  (def only-items
+    (complete 184 "(import ./module :only [ex" 0 26))
+  (test (has-value? (map |($ :label) only-items) "exported") true)
+
+  (def binding-items (complete 173 "(defn run [&" 0 12))
+  (test (has-value? (map |($ :label) binding-items) "&opt") true)
+  (test (has-value? (map |($ :label) binding-items) "string") false)
+  (test (has-value? (map |($ :label) (complete 185 "(def str" 0 8)) "string")
+        false)
+  (test (has-value? (map |($ :label) (complete 186 "(let [str" 0 9)) "string")
+        false)
+  (test (has-value? (map |($ :label) (complete 187 "(let [value str" 0 15))
+                    "string")
+        true)
+  (test (has-value? (map |($ :label) (complete 196 "(defn run [] [str" 0 17))
+                    "string")
+        true)
+  (test (has-value? (map |($ :label) (complete 202 "(loop [str" 0 10)) "string")
+        false)
+  (test (has-value?
+          (map |($ :label) (complete 212 "(loop [x :in xs str" 0 19))
+          "string")
+        false)
+
+  (def table-key-items (complete 174 "{:custom 1}\n{:cu" 1 4))
+  (test (has-value? (map |($ :label) table-key-items) ":custom") true)
+  (test (has-value? (map |($ :label) table-key-items) "string") false)
+  (def table-value-items (complete 175 "{:custom str" 0 12))
+  (test (has-value? (map |($ :label) table-value-items) "string") true)
+  (def lookup-key-items
+    (complete 197 "{:custom 1}\n(get table :cu)" 1 14))
+  (test (has-value? (map |($ :label) lookup-key-items) ":custom") true)
+  (test (has-value? (map |($ :label) lookup-key-items) "string") false)
+  (def metadata-items (complete 176 "(def value :pr" 0 14))
+  (test (has-value? (map |($ :label) metadata-items) ":private") true)
+  (test (has-value? (map |($ :label) metadata-items) ":prefix") true)
+  (def body-keywords (complete 203 "(defn f [] :pr" 0 14))
+  (test (has-value? (map |($ :label) body-keywords) ":prefix") true)
+  (test (complete 188 "# str" 0 5) @[])
+  (test (complete 189 "\"str\"" 0 3) @[])
+  (test (complete 190 "`str`" 0 3) @[])
+  (def after-long-string (complete 204 "`(use `\nstr" 1 3))
+  (test (has-value? (map |($ :label) after-long-string) "string") true)
+  (def after-adjacent-long (complete 214 "``a```b`\nstr" 1 3))
+  (test (has-value? (map |($ :label) after-adjacent-long) "string") true)
+
+  (def auto-items (complete 177 "# main\nexpo" 1 4))
+  (def auto-item
+    (first (filter |(= "exported" ($ :label)) auto-items)))
+  (test (string/find "./module" (auto-item :detail)) 17)
+  (test (get-in auto-item [:additionalTextEdits 0 :newText])
+        "(import ./module :only [exported] :prefix \"\")\n")
+  (test (get-in auto-item [:additionalTextEdits 0 :range :start :line]) 0)
+  (test (get-in auto-item [:additionalTextEdits 0 :range :start :character]) 0)
+  (test (get-in auto-item [:textEdit :range :start :line]) 1)
+  (test (get-in auto-item [:textEdit :range :start :character]) 0)
+  (def shebang-items (complete 198 "#!/usr/bin/env janet\nexpo" 1 4))
+  (def shebang-item
+    (first (filter |(= "exported" ($ :label)) shebang-items)))
+  (test (get-in shebang-item [:additionalTextEdits 0 :range :start :line]) 0)
+  (test (get-in shebang-item [:additionalTextEdits 0 :newText])
+        "\n(import ./module :only [exported] :prefix \"\")\n")
+  (def spaced-auto-items (complete 213 "#\nspaced" 1 6))
+  (def spaced-auto
+    (first (filter |(= "spaced-export" ($ :label)) spaced-auto-items)))
+  (test (get-in spaced-auto [:additionalTextEdits 0 :newText])
+        "(import \"./my module\" :only [spaced-export] :prefix \"\")\n")
+  (def nested-import-items
+    (complete 205 "(defn f [] (import ./module))\n# top\nexpo" 2 4))
+  (def nested-import-item
+    (first (filter |(= "exported" ($ :label)) nested-import-items)))
+  (test (get-in nested-import-item [:additionalTextEdits 0 :range :start :line]) 0)
+  (def late-import-items
+    (complete 206 "module/ex\n(import ./module :as module)\n" 0 9))
+  (test (has-value? (map |($ :label) late-import-items) "module/exported") false)
+  (def nested-alias-items
+    (complete 208 "(defn f [] (import ./module :as module))\nmodule/ex" 1 9))
+  (test (has-value? (map |($ :label) nested-alias-items) "module/exported") false)
+  (test (has-value? (map |($ :label) (complete 209 "string/as" 0 9))
+                    "string/ascii-lower")
+        true)
+  (test (has-value? (map |($ :label) (complete 178 "#\nhid" 1 3)) "hidden") false)
+  (test (has-value? (map |($ :label) (complete 191 "#\nsec" 1 3)) "secret") false)
+  (test (has-value? (map |($ :label) (complete 192 "#\namb" 1 3)) "ambiguous")
+        false)
+
+  (def resolved-current (request cursor 179 "completionItem/resolve" auto-item))
+  # The item came from version 177, while later requests advanced the document.
+  (test (get-in resolved-current [:result :additionalTextEdits]) nil)
+
+  (def snippet-items (complete 180 "defn" 0 4))
+  (def defn-item (first (filter |(= "defn" ($ :label)) snippet-items)))
+  (test (get defn-item :insertTextFormat) 2)
+  (test (string/has-prefix? "(defn ${1:name}" (defn-item :insertText)) true)
+  (def bare-snippets (complete 207 "(" 0 1))
+  (def bare-defn (first (filter |(= "defn" ($ :label)) bare-snippets)))
+  (test (string/has-prefix? "defn ${1:name}" (bare-defn :insertText)) true)
+  (def paired-snippets (complete 215 "()" 0 1))
+  (def paired-defn (first (filter |(= "defn" ($ :label)) paired-snippets)))
+  (test (string/has-suffix? ")" (paired-defn :insertText)) false)
+
+  (def ranked-source "(defn run [string-local] str)\n")
+  (def ranked-items (complete 181 ranked-source 0 28))
+  (test (first (map |($ :label) ranked-items)) "string-local")
+  (def usage-source "(defn run [alpha alpine] (+ alpha alpha alp))\n")
+  (def usage-items (complete 195 usage-source 0 43))
+  (test (first (map |($ :label) usage-items)) "alpha")
+
+  (exit-lsp cursor)
+  (def plain (spawn-lsp))
+  (request plain 193 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document plain main-uri "defn" 1)
+  (def plain-items
+    (get-in (request plain 194 "textDocument/completion"
+                     {:textDocument {:uri main-uri}
+                      :position {:line 0 :character 4}})
+            [:result :items]))
+  (test (get (first (filter |(= "defn" ($ :label)) plain-items))
+             :insertTextFormat)
+        nil)
+  (exit-lsp plain)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
 
 (deftest "resolve same-named completions in their originating documents"
   (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))

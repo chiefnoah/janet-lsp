@@ -1,76 +1,23 @@
 (import ./doc)
 (import ./analysis)
+(import ./completion)
 (import ./index)
 (import ./logging)
 (import ./lookup)
-(import ./parser)
 (import ./position)
 (import ./server-utils)
 (import ./signatures)
-(import ./utils)
 
-(defmacro binding-to-lsp-item
+(defn binding-to-lsp-item
   "Convert a Janet binding to an LSP CompletionItem."
   [name eval-env]
-  (with-syms [$name $eval-env]
-    ~(let [,$name ,name
-           ,$eval-env ,eval-env
-           value (get-in ,$eval-env [,$name :value] ,$name)]
-       {:label ,$name
-        :kind (case (type value)
-                :symbol 12 :boolean 6
-                :function 3 :cfunction 3
-                :string 6 :buffer 6
-                :number 6 :keyword 6
-                :core/file 17 :core/peg 6
-                :struct 6 :table 6
-                :tuple 6 :array 6
-                :fiber 6 :nil 6
-                6)})))
+  (completion/binding-item name eval-env))
 
 (defn on-completion [state params]
   (let [document (server-utils/document state params)
         content (document :content)
         location (server-utils/request-byte-position state params content)
-        context (lookup/call-context location content)
-        signature (and context
-                       (signatures/find-in (get-in document [:analysis :signatures] @[])
-                                           (context :callee)))
-        used-named (if signature
-                     (signatures/used-named-arguments content context signature)
-                     @[])
-        named-items
-        (if (and signature
-                 (>= (context :active-parameter)
-                     (max 0 (dec (signature :positional)))))
-          (catseq [parameter :in (signature :named)
-                   :when (not (has-value? used-named (parameter :label)))]
-            {:label (parameter :label)
-             :kind 14
-             :detail (string "Named argument for " (signature :name))
-             :insertText (string (parameter :label) " ")})
-          @[])
-        word (lookup/word-at location content)
-        prefix (string/slice (word :word) 0
-                             (max 0 (- (location :character)
-                                       (first (word :range)))))
-        locals (parser/get-syms-at-loc location content
-                                       (get-in document [:analysis :syntax-tree]))
-        globals (seq [binding :in (all-bindings (document :eval-env))]
-                  (binding-to-lsp-item binding (document :eval-env)))
-        bindings (utils/concat-dedup-by-label named-items locals globals)
-        matching (if (empty? prefix)
-                   bindings
-                   (filter |(string/has-prefix? prefix (string ($ :label))) bindings))
-        limit 2000
-        items (array/slice matching 0 (min limit (length matching)))
-        result {:isIncomplete (> (length matching) limit)
-                :items (map |(merge $ {:data {:uri (document :uri)
-                                              :version (document :version)
-                                              :snapshot (get-in document
-                                                                [:analysis :key])
-                                              :binding (string ($ :label))}})
-                            items)}]
+        result (completion/complete state document location)]
     (logging/message result [:completion] 1)
     [:ok state result]))
 
@@ -85,10 +32,17 @@
   (def documentation
     (and (or (nil? snapshot-key) eval-env)
          (doc/my-doc* (symbol label) (or eval-env (make-env root-env)))))
-  (def result (if documentation
+  (var result (if documentation
                 (merge params {"documentation" {:kind "markdown"
                                                  :value documentation}})
                 params))
+  (def additional-key
+    (first (filter |(= "additionalTextEdits" (string $)) (keys result))))
+  (when (and additional-key
+             (or (nil? document)
+                 (not= (document :version) (get-in params ["data" "version"]))))
+    (set result (merge result))
+    (put result additional-key nil))
   (logging/message result [:completion])
   [:ok state result])
 

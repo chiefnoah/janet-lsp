@@ -17,6 +17,7 @@
     :diagnostic-settings diagnostic-settings
     :diagnostic-generation 0
     :diagnostic-refresh-support false
+    :completion-snippets false
     :workspaces @{}
     :standalone-workspace @{:uri nil
                             :path nil
@@ -41,6 +42,10 @@
        (not (not (get-in params
                          ["capabilities" "workspace" "diagnostics"
                           "refreshSupport"]))))
+  (put state :completion-snippets
+       (not (not (get-in params
+                         ["capabilities" "textDocument" "completion"
+                          "completionItem" "snippetSupport"]))))
   (put state :inlay-parameter-hints
        (not= false
              (get-in params
@@ -72,7 +77,8 @@
   (def result
     {:capabilities
      {:positionEncoding encoding
-      :completionProvider {:resolveProvider true}
+      :completionProvider {:resolveProvider true
+                           :triggerCharacters ["/" ":" "." "\""]}
       :textDocumentSync {:openClose true :change 2}
       :diagnosticProvider {:identifier "janet-lsp"
                            :interFileDependencies true

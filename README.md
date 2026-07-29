@@ -9,7 +9,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 ### Stable Features
 
 - Validated incremental open/change/close synchronization with UTF-16 and UTF-8 positions
-- Core and lexical completion with document-aware completion resolution
+- Context-aware core, lexical, module, keyword, snippet, and auto-import completion
 - Named-argument completion, hover documentation, and active-parameter signature help
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
@@ -128,6 +128,21 @@ not include text edits. Disable the category with:
   }
 }
 ```
+
+### Contextual Completion
+
+Completion uses parser snapshots and the owning workspace index without loading
+or executing modules. It completes indexed paths in `import`, `use`, `require`,
+and `dofile`, imported aliases and public module members, selective `:only`
+exports, binding markers, observed keywords, table keys, and binding metadata.
+Private definitions declared with a `-` form or `:private` metadata are excluded.
+
+Clients advertising snippet support receive Janet form snippets for common
+forms such as `defn`, `fn`, `let`, and `if`. General expression completion is
+ranked by lexical scope, imported-module proximity, workspace usage, and stable
+label order. A unique missing workspace export may include a version-aware
+`additionalTextEdits` import; overlapping first-line edits are not offered, and
+stale import edits are removed during completion resolution.
 
 ### Static Diagnostics
 

@@ -74,6 +74,19 @@
     :defn (get-in (first (filter |(= :fn ($ :tag)) (form :value))) [:value 0])
     (get-in form [:value 1])))
 
+(defn- private-definition? [form source form-head]
+  (try
+    (let [parsed (parse (string/slice source (form :index)
+                                      (+ (form :index) (form :len))))
+          metadata
+          (if (get function-heads form-head)
+            (let [parameters
+                  (find-index |(and (tuple? $) (= :brackets (tuple/type $))) parsed)]
+              (if parameters (tuple/slice parsed 2 parameters) @[]))
+            (tuple/slice parsed 2 -1))]
+      (has-value? metadata :private))
+    ([_] false)))
+
 (defn- definition [form document-uri source top-level container]
   (def form-head (head form source))
   (when-let [kind (get definition-heads form-head)
@@ -97,48 +110,61 @@
                        (get-in selection-range [:start :character]))
      :kind kind
      :form form-head
+     :private (private-definition? form source form-head)
      :top-level top-level
      :container container
      :range (node-range form source)
      :selection-range selection-range
      :children children}))
 
-(defn- import-record [form source]
+(defn- parsed-option [parsed key]
+  (when (indexed? parsed)
+    (when-let [option (find-index |(= key $) parsed)]
+      (get parsed (inc option)))))
+
+(defn- import-records [form source top-level]
   (def form-head (head form source))
   (when (get import-heads form-head)
-    (def leaves (filter leaf? (form :value)))
     (def parsed
       (try (parse (string/slice source (form :index)
                                 (+ (form :index) (form :len))))
         ([_] nil)))
-    (def module
-      (or (and (> (length leaves) 1) ((leaves 1) :value))
-          (and (indexed? parsed) (> (length parsed) 1)
-               (string (parsed 1)))))
-    (when module
-      (def alias-index (find-index |(= ":as" ($ :value)) leaves))
-      (def only-index (find-index |(= ":only" ($ :value)) leaves))
-      (def export-index (find-index |(= ":export" ($ :value)) leaves))
-      {:module module
-       :kind form-head
-       :alias (if (and alias-index (< (inc alias-index) (length leaves)))
-                ((leaves (inc alias-index)) :value)
-                (path/basename module))
-       :only (if only-index
-               (let [node (get-in form [:value (inc only-index)])]
-                 (if node (map |($ :value) (binding-leaves node)) @[]))
-               @[])
-       :export (and export-index
-                    (= "true" (get-in leaves [(inc export-index) :value])))
-       :range (node-range form source)})))
+    (when (and (indexed? parsed) (> (length parsed) 1))
+      (def modules
+        (if (= "use" form-head)
+          (tuple/slice parsed 1)
+          [(parsed 1)]))
+      (def as (parsed-option parsed :as))
+      (def explicit-prefix (parsed-option parsed :prefix))
+      (def only (parsed-option parsed :only))
+      (def exported (not (not (parsed-option parsed :export))))
+      (catseq [module-value :in modules
+               :when (or (symbol? module-value) (string? module-value))
+               :let [module (string module-value)
+                     prefix
+                     (cond
+                       (= "use" form-head) ""
+                       as (string as "/")
+                       (not (nil? explicit-prefix)) (string explicit-prefix)
+                       (has-value? ["import" "import*"] form-head)
+                       (string (first (string/split "." (path/basename module))) "/")
+                       "")]]
+        {:module module
+         :kind form-head
+         :alias (string/trimr prefix "/")
+         :prefix prefix
+         :only (if (indexed? only) (map string only) @[])
+         :export (and (has-value? ["import" "import*"] form-head) exported)
+         :top-level top-level
+         :range (node-range form source)}))))
 
 (defn- collect-nodes
   [node document-uri source definitions references imports depth container]
   (when (dictionary? node)
     (def found (definition node document-uri source (= depth 0) container))
     (when found (array/push definitions found))
-    (when-let [found (import-record node source)]
-      (array/push imports found))
+    (each imported (or (import-records node source (= depth 0)) @[])
+      (array/push imports imported))
     (when (leaf? node)
       (array/push references
                   @{:name (node :value) :uri document-uri
@@ -220,41 +246,96 @@
     (put visited key true)
     (or (first (filter |(and ($ :top-level)
                              (= name ($ :name))
+                             (not ($ :private))
                              (not (string/has-suffix? "-" ($ :form))))
                        (get-in workspace [:index document-uri :definitions] @[])))
         (some (fn [imported]
                 (when (and (imported :export)
-                           (= "use" (imported :kind))
-                           (or (empty? (imported :only))
-                               (has-value? (imported :only) name)))
-                  (when-let [target-uri
-                             (module-uri workspace document-uri (imported :module))]
-                    (exported-definition workspace target-uri name visited))))
+                           (imported :top-level)
+                           (string/has-prefix? (imported :prefix) name))
+                  (def target-name (string/slice name (length (imported :prefix))))
+                  (when (or (empty? (imported :only))
+                            (has-value? (imported :only) target-name))
+                    (when-let [target-uri
+                               (module-uri workspace document-uri (imported :module))]
+                      (exported-definition workspace target-uri target-name visited)))))
               (get-in workspace [:index document-uri :imports] @[])))))
 
-(defn resolve-definition [workspace document-uri name]
-  (def parts (string/split "/" name))
+(varfn exported-definitions [])
+
+(varfn exported-definitions [workspace document-uri &opt visited]
+  (default visited @{})
+  (if (get visited document-uri)
+    @[]
+    (do
+      (put visited document-uri true)
+      (def found
+        (array
+          ;(filter |(and ($ :top-level)
+                         (not ($ :private))
+                         (not (string/has-suffix? "-" ($ :form))))
+                   (get-in workspace [:index document-uri :definitions] @[]))))
+      (each imported (get-in workspace [:index document-uri :imports] @[])
+        (when (and (imported :export) (imported :top-level))
+          (when-let [target-uri
+                     (module-uri workspace document-uri (imported :module))]
+            (each definition (exported-definitions workspace target-uri visited)
+              (when (or (empty? (imported :only))
+                        (has-value? (imported :only) (definition :name)))
+                (array/push
+                  found
+                  (merge definition
+                         {:name (string (imported :prefix) (definition :name))})))))))
+      (def seen @{})
+      (def result
+        (filter |(if (get seen ($ :name))
+                   false
+                   (do (put seen ($ :name) true) true))
+                found))
+      (put visited document-uri nil)
+      result)))
+
+(defn- position-before? [left right]
+  (or (< (left :line) (right :line))
+      (and (= (left :line) (right :line))
+           (<= (left :character) (right :character)))))
+
+(defn- visible-import? [imported position]
+  (and (imported :top-level)
+       (or (nil? position)
+           (position-before? (get-in imported [:range :end]) position)
+           (and (position-before? (get-in imported [:range :start]) position)
+                (position-before? position (get-in imported [:range :end]))))))
+
+(defn resolve-definition [workspace document-uri name &opt position]
   (def record (get (workspace :index) document-uri))
-  (if (> (length parts) 1)
-    (let [target-name (last parts)
-          prefix (first parts)]
-      (or (when-let [imported
-                     (first (filter |(= prefix ($ :alias)) (record :imports)))
-                     target-uri (module-uri workspace document-uri (imported :module))]
-            (when (or (empty? (imported :only))
-                      (has-value? (imported :only) target-name))
-              (exported-definition workspace target-uri target-name @{})))
-          (first (filter |(not (string/has-suffix? "-" ($ :form)))
-                         (definitions workspace target-name)))))
-    (or (definition-in workspace document-uri name)
-        (some (fn [imported]
-                (when (and (= "use" (imported :kind))
-                           (or (empty? (imported :only))
-                               (has-value? (imported :only) name)))
-                  (when-let [target-uri
-                             (module-uri workspace document-uri (imported :module))]
-                    (exported-definition workspace target-uri name @{}))))
-              (record :imports)))))
+  (or (definition-in workspace document-uri name)
+      (some
+        (fn [imported]
+          (when (and (visible-import? imported position)
+                     (has-value? ["import" "import*" "use"] (imported :kind))
+                     (string/has-prefix? (imported :prefix) name))
+            (def target-name (string/slice name (length (imported :prefix))))
+            (when (and (not (empty? target-name))
+                       (or (empty? (imported :only))
+                           (has-value? (imported :only) target-name)))
+              (when-let [target-uri
+                         (module-uri workspace document-uri (imported :module))]
+                (exported-definition workspace target-uri target-name @{})))))
+        (record :imports))
+      (when (> (length (string/split "/" name)) 1)
+        (when
+          (any?
+            (map |(and (visible-import? $ position)
+                       (has-value? ["import" "import*"] ($ :kind))
+                       (not (empty? ($ :prefix)))
+                       (string/has-prefix? ($ :prefix) name)
+                       (nil? (module-uri workspace document-uri ($ :module))))
+                 (record :imports)))
+          (first
+            (filter |(not (or ($ :private)
+                              (string/has-suffix? "-" ($ :form))))
+                    (definitions workspace (last (string/split "/" name)))))))))
 
 (defn relink [workspace]
   (each record (values (workspace :index))
@@ -264,7 +345,8 @@
         (put reference :identity-kind nil))
       (unless (reference :identity)
         (when-let [definition
-                   (resolve-definition workspace (record :uri) (reference :name))]
+                   (resolve-definition workspace (record :uri) (reference :name)
+                                       (get-in reference [:range :start]))]
           (put reference :identity (definition :identity))
           (put reference :identity-kind :import)))))
   workspace)
@@ -295,6 +377,7 @@
                                    (type (binding :value))) 12 13)
              :form "generated"
              :generated true
+             :private (not (not (binding :private)))
              :top-level true
              :range {:start location :end location}
              :selection-range {:start location :end location}

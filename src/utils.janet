@@ -3,7 +3,7 @@
         result @[]]
     (each arr arrays
       (each item arr
-        (let [item-label (get item :label)]
+        (let [item-label (string (get item :label))]
           (unless (seen item-label)
             (put seen item-label true)
             (array/push result item)))))
