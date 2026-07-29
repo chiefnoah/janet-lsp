@@ -39,6 +39,9 @@ Format for entires is <version-string> - release date.
 - Centralized platform-specific temporary paths, path comparison, and
   executable lookup, and added VS Code, Neovim, Helix, and Zed protocol smoke
   profiles.
+- Replaced the broken third-party CI bootstrap with pinned Janet and JPM setup,
+  locked dependencies, and direct bounded Judge execution that avoids unrelated
+  archive generation.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

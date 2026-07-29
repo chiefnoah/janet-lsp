@@ -4,14 +4,69 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JANET_VERSION: 1.41.2
+  JANET_SHA256: c09ac75730de76ad2f3e28eb054ee69c7ebb56ec95ae20234c0a0c37e57de681
+  JPM_COMMIT: 907daf191ad3f1cf7e5190ec4f44eb29cd54ba21
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: pyrmont/action-janet-test@v5
-        with:
-          janet-ver: latest
-          os: linux
-          cmd-deps: jpm --local load-lockfile
-          cmd-test: jpm --local run test
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Janet
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/janet"
+          archive="$RUNNER_TEMP/janet.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/janet-lang/janet/releases/download/v${JANET_VERSION}/janet-v${JANET_VERSION}-linux-x64.tar.gz" \
+            --output "$archive"
+          echo "$JANET_SHA256  $archive" | sha256sum --check --strict
+          mkdir -p "$prefix"
+          tar -xzf "$archive" --strip-components=2 -C "$prefix"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "JANET_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "JANET_BINPATH=$prefix/bin" >> "$GITHUB_ENV"
+          echo "JANET_HEADERPATH=$prefix/include" >> "$GITHUB_ENV"
+          echo "JANET_LIBPATH=$prefix/lib" >> "$GITHUB_ENV"
+          echo "JANET_MODPATH=$prefix/lib/janet" >> "$GITHUB_ENV"
+          echo "JANET_MANPATH=$prefix/share/man/man1" >> "$GITHUB_ENV"
+          echo "JANET_PATH=$prefix" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Install JPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset JANET_TREE
+          git clone --filter=blob:none https://github.com/janet-lang/jpm.git "$RUNNER_TEMP/jpm"
+          git -C "$RUNNER_TEMP/jpm" checkout --detach "$JPM_COMMIT"
+          cd "$RUNNER_TEMP/jpm"
+          janet bootstrap.janet
+          janet -v
+          jpm >/dev/null
+
+      - name: Install locked dependencies
+        run: jpm --local load-lockfile
+
+      - name: Test
+        env:
+          JANET_PATH: ${{ github.workspace }}/jpm_tree/lib
+        run: >-
+          timeout 180 ./jpm_tree/bin/judge
+          test/test-main.janet
+          test/test-lookup.janet
+          test/test-parser.janet
+          test/test-integration.janet
