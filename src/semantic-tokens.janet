@@ -2,6 +2,7 @@
 (import ./index)
 (import ./lookup)
 (import ./position)
+(import ./request-control)
 (import ./server-utils)
 
 (def special-forms
@@ -158,6 +159,8 @@
         (and (= left-line right-line) (< left-character right-character))))
   (def lines (string/split "\n" content))
   (each token records
+    (when (= 0 (% count 256))
+      (request-control/checkpoint state request-id))
     (+= count 1)
     (def range (server-utils/lsp-range state content (token :range)))
     (def start (range :start))

@@ -2405,6 +2405,26 @@
   (test (get-in cancelled [:error :code]) -32800)
   (notify cursor "$/cancelRequest" {:id 159})
   (test (get-in (request cursor 159 "workspace/diagnostic" {}) [:error :code]) -32800)
+  (each [id method]
+        [[312 "workspace/symbol"]
+          [313 "textDocument/references"]
+          [314 "textDocument/rename"]
+         [315 "textDocument/semanticTokens/full"]]
+    (notify cursor "$/cancelRequest" {:id id})
+    (test (get-in
+            (request cursor id method
+                     (if (= method "workspace/symbol")
+                       {:query "value"}
+                       {:textDocument {:uri document-uri}
+                        :position {:line 0 :character 0}
+                        :newName "renamed"}))
+            [:error :code])
+          -32800))
+  (write-output cursor
+                {:jsonrpc "2.0" :id 316 :method "workspace/symbol"
+                 :params {:query "value"}}
+                {:jsonrpc "2.0" :method "$/cancelRequest" :params {:id 316}})
+  (test (get-in (read-output cursor) [:error :code]) -32800)
   (test (get-in (request cursor 71 "janet/serverInfo") [:id]) 71))
 
 (deftest: with-process-open "completion includes core and local bindings" [cursor]

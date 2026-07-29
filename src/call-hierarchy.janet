@@ -1,5 +1,6 @@
 (import ./index)
 (import ./navigation)
+(import ./request-control)
 (import ./server-utils)
 (import ./uri)
 (import spork/path)
@@ -9,8 +10,9 @@
              filepath (uri/file-uri->path document-uri)]
     (server-utils/workspace-for-path state filepath)))
 
-(defn- callable-item [state callable]
-  (when-let [content (server-utils/content state (callable :uri))]
+(defn- callable-item [state callable &opt sources]
+  (default sources @{})
+  (when-let [content (request-control/content state sources (callable :uri))]
     {:name (callable :name)
      :kind (callable :kind)
      :detail (string (callable :form) " in "
@@ -32,6 +34,7 @@
     {:workspace workspace :callable callable :identity identity}))
 
 (defn- cancelled? [state request-id]
+  (ev/sleep 0.001)
   (and request-id (has-key? (state :cancelled-requests) request-id)))
 
 (defn on-prepare [state params]
@@ -78,14 +81,15 @@
 (defn on-incoming [state params request-id]
   (if-let [context (item-context state params)]
     (let [workspace (context :workspace)
+           sources @{}
           groups (grouped (index/incoming-calls workspace (context :identity)) :caller)
           results @[]]
       (eachp [caller-identity calls] groups
         (when (cancelled? state request-id)
           (break))
         (when-let [caller (index/callable-by-identity workspace caller-identity)
-                   item (callable-item state caller)
-                   content (server-utils/content state (caller :uri))]
+                    item (callable-item state caller sources)
+                    content (request-control/content state sources (caller :uri))]
           (array/push results
                       {:from item
                        :fromRanges
@@ -101,15 +105,18 @@
 (defn on-outgoing [state params request-id]
   (if-let [context (item-context state params)]
     (if-let [caller-content
-             (server-utils/content state (get-in context [:callable :uri]))]
+              (server-utils/content state (get-in context [:callable :uri]))]
       (let [workspace (context :workspace)
+           sources (do (def found @{})
+                       (put found (get-in context [:callable :uri]) caller-content)
+                       found)
           groups (grouped (index/outgoing-calls workspace (context :identity)) :identity)
           results @[]]
       (eachp [target-identity calls] groups
         (when (cancelled? state request-id)
           (break))
         (when-let [target (index/callable-by-identity workspace target-identity)
-                   item (callable-item state target)]
+                    item (callable-item state target sources)]
           (array/push results
                       {:to item
                        :toRanges

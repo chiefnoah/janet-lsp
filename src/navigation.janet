@@ -3,6 +3,7 @@
 (import ./lookup)
 (import ./parser)
 (import ./position)
+(import ./request-control)
 (import ./server-utils)
 (import ./uri)
 (import spork/path)
@@ -152,13 +153,18 @@
             (filter |(nil? ($ :container)) definitions))])
     [:ok state @[]]))
 
-(defn on-workspace-symbols [state params]
+(defn- workspace-symbols [state params request-id]
+  (request-control/checkpoint state request-id)
   (def query (string/ascii-lower (or (get params "query") "")))
   (def symbols @[])
+  (def sources @{})
+  (var count 0)
   (each workspace (values (state :workspaces))
     (each definition (index/definitions workspace)
+      (when (= 0 (% count 128)) (request-control/checkpoint state request-id))
+      (+= count 1)
       (when (string/find query (string/ascii-lower (definition :name)))
-        (when-let [content (server-utils/content state (definition :uri))]
+        (when-let [content (request-control/content state sources (definition :uri))]
           (array/push symbols
                       {:name (definition :name)
                        :kind (definition :kind)
@@ -166,7 +172,13 @@
                                   :range (server-utils/lsp-range
                                            state content
                                            (definition :selection-range))}})))))
-  [:ok state symbols])
+  symbols)
+
+(defn on-workspace-symbols [state params request-id]
+  (try [:ok state (workspace-symbols state params request-id)]
+    ([err] (if (= :request-cancelled err)
+             [:rpc-error state -32800 "Request cancelled" nil]
+             (error err)))))
 
 (defn- raw-references [context include-declaration]
   (var locations @[])
@@ -208,22 +220,27 @@
                  locations)))
   locations)
 
-(defn references [state params]
+(defn references [state params &opt request-id]
   (def context (symbol-context state params))
   (if (or (empty? (context :name))
           (not (or (context :local) (context :indexed))))
     @[]
-    (distinct
+    (let [sources @{}]
+      (distinct
       (catseq [found :in (raw-references
                            context
                            (not= false (get-in params ["context" "includeDeclaration"])))
-               :let [content (server-utils/content state (found :uri))]
+               :let [content (request-control/content state sources (found :uri))]
                :when content]
-        {:uri (found :uri)
-         :range (server-utils/lsp-range state content (found :range))}))))
+        (request-control/checkpoint state request-id)
+         {:uri (found :uri)
+          :range (server-utils/lsp-range state content (found :range))})))))
 
-(defn on-references [state params]
-  [:ok state (references state params)])
+(defn on-references [state params request-id]
+  (try [:ok state (references state params request-id)]
+    ([err] (if (= :request-cancelled err)
+               [:rpc-error state -32800 "Request cancelled" nil]
+               (error err)))))
 
 (defn on-document-highlights [state params]
   (def context (symbol-context state params))
@@ -355,13 +372,14 @@
     (first (filter |(= name ($ :name))
                    (index/exported-definitions (context :workspace) target-uri)))))
 
-(defn- identity-locations [state workspace identity]
+(defn- identity-locations [state workspace identity &opt sources]
+  (default sources @{})
   (def locations @[])
   (each reference (index/references-by-identity workspace identity)
     (array/push locations {:uri (reference :uri) :range (reference :range)
                            :qualified (string/find "/" (reference :name))}))
   (each record (values (workspace :index))
-    (when-let [content (server-utils/content state (record :uri))]
+    (when-let [content (request-control/content state sources (record :uri))]
       (each imported (record :imports)
         (when-let [target-uri
                    (let [targets (index/module-uris workspace (record :uri)
@@ -461,12 +479,12 @@
                                            (context :content))}}))
       nil)))
 
-(defn- lsp-edit [state uri range new-text]
-  (when-let [content (server-utils/content state uri)]
+(defn- lsp-edit [state uri range new-text &opt known-content]
+  (when-let [content (or known-content (server-utils/content state uri))]
     {:range (server-utils/lsp-range state content range) :newText new-text}))
 
-(defn- changes-edit [state changes uri range new-text]
-  (when-let [edit (lsp-edit state uri range new-text)]
+(defn- changes-edit [state changes uri range new-text &opt known-content]
+  (when-let [edit (lsp-edit state uri range new-text known-content)]
     (unless (get changes uri) (put changes uri @[]))
     (array/push (get changes uri) edit)))
 
@@ -521,7 +539,8 @@
     (def token (context :token))
     (def declaration-text (if (= :prefix (context :kind)) new-prefix new-name))
     (changes-edit state changes (get-in context [:document :uri])
-                  (token-range token (context :content)) declaration-text)
+                  (token-range token (context :content)) declaration-text
+                  (context :content))
     (each reference (record :references)
       (when (and (= :import (reference :identity-kind))
                  (string/has-prefix? old-prefix (reference :name))
@@ -531,7 +550,8 @@
         (changes-edit state changes (record :uri) (reference :range)
                       (string new-prefix
                               (string/slice (reference :name)
-                                            (length old-prefix))))))
+                                            (length old-prefix)))
+                      (context :content))))
     changes))
 
 (defn- identity-collision? [workspace identity new-name]
@@ -578,9 +598,10 @@
   (def workspace (get-in target [:context :workspace]))
   (unless (identity-collision? workspace (definition :identity) new-name)
     (def changes @{})
-    (each location (identity-locations state workspace (definition :identity))
+    (def sources @{})
+    (each location (identity-locations state workspace (definition :identity) sources)
       (def old-name
-        (when-let [content (server-utils/content state (location :uri))]
+        (when-let [content (request-control/content state sources (location :uri))]
           (def range (location :range))
           (def start (lookup/to-index (range :start) content))
           (def end (lookup/to-index (range :end) content))
@@ -592,7 +613,8 @@
                                               (- (length old-name)
                                                  (length (definition :name))))
                                 new-name)
-                        new-name))))
+                        new-name)
+                      (request-control/content state sources (location :uri)))))
     changes))
 
 (defn- source-module-path [document-path target-path extension?]
@@ -662,7 +684,7 @@
                                   (string/has-suffix? ".janet" (imported :module)))
                          token (get-in (import-syntax content imported) [:module])]
                   (changes-edit state changes (record :uri)
-                                (token-range token content) module)
+                                (token-range token content) module content)
                   (set safe false)))
               (when (and (= 1 (length targets))
                          (has-value? ["import" "import*"] (imported :kind))
@@ -703,7 +725,7 @@
                                      (index/exported-definitions workspace old-uri))))
                     (when imported-definition
                       (changes-edit state changes (record :uri) (reference :range)
-                                    (string new-prefix target-name))))))))))
+                                    (string new-prefix target-name) content)))))))))
       (when safe
         {:changes changes :operation {:kind "rename" :oldUri old-uri :newUri new-uri
                                       :options {:overwrite false
@@ -718,7 +740,8 @@
                  :placeholder (target :name)}]
     [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"]))
 
-(defn on-rename [state params]
+(defn- rename [state params request-id]
+  (request-control/checkpoint state request-id)
   (def new-name (get params "newName"))
   (def target (rename-target state params))
   (cond
@@ -737,11 +760,13 @@
 
     (= :module (target :kind))
     (if-let [renamed (module-rename state target new-name)]
-      [:ok state
-       {:documentChanges
-        (array
-          ;(document-changes state (renamed :changes))
-          ;[(renamed :operation)])}]
+      (do
+        (request-control/checkpoint state request-id)
+        [:ok state
+         {:documentChanges
+          (array
+            ;(document-changes state (renamed :changes))
+            ;[(renamed :operation)])}])
       [:rpc-error state -32602 "Invalid params" "module cannot be renamed safely"])
 
     (has-value? [:alias :member] (target :kind))
@@ -750,20 +775,23 @@
                           ((if (= :alias (target :kind))
                              alias-rename member-rename)
                            state target new-name))]
-      [:ok state
-       {:documentChanges (document-changes state changes)}]
+      (do
+        (request-control/checkpoint state request-id)
+        [:ok state {:documentChanges (document-changes state changes)}])
       [:rpc-error state -32602 "Invalid params" "import cannot be renamed safely"])
 
     (let [context (target :context)
           changes @{}
+          sources @{}
           locations
           (if-let [identity (get-in context [:indexed :identity])]
-            (identity-locations state (context :workspace) identity)
+            (identity-locations state (context :workspace) identity sources)
             (map |{:uri ($ :uri) :range ($ :range)}
                  (raw-references context true)))]
       (each location locations
+        (request-control/checkpoint state request-id)
         (def document-uri (location :uri))
-        (when-let [content (server-utils/content state document-uri)]
+        (when-let [content (request-control/content state sources document-uri)]
           (def range (location :range))
           (def start (lookup/to-index (range :start) content))
           (def end (lookup/to-index (range :end) content))
@@ -775,6 +803,13 @@
                                                 (- (length old-name)
                                                    (length canonical)))
                                   new-name)
-                          new-name))))
+                          new-name)
+                        content)))
       [:ok state
        {:documentChanges (document-changes state changes)}])))
+
+(defn on-rename [state params request-id]
+  (try (rename state params request-id)
+    ([err] (if (= :request-cancelled err)
+             [:rpc-error state -32800 "Request cancelled" nil]
+             (error err)))))

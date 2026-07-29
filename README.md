@@ -338,6 +338,14 @@ $ jpm --local run test
 The test task runs the same Judge unit and integration suite used by CI. Keeping
 dependencies local avoids relying on modules installed for other Janet projects.
 
+A deterministic synthetic benchmark exercises indexing and relinking without
+filesystem or runtime-evaluation noise. Its optional arguments are file count
+and definitions per file:
+
+```shell
+$ janet bench/large-workspace.janet 200 100
+```
+
 A .jimage (Janet image) file will be generated in `/build`. Using a .jimage file makes Janet LSP fully cross-platform (wherever there is a compatible Janet binary on the user's path). But it also means that you must have a Janet binary to use Janet LSP (this author struggles to imagine a scenario where you would both need the LSP and NOT have Janet itself installed).
 
 ### Installing

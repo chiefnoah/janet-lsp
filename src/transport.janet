@@ -13,7 +13,10 @@
       (when (= name "content-length")
         (when content-length
           (error "malformed LSP headers: duplicate Content-Length"))
-        (def digits (first (peg/match ~(* (<- :d+) -1) value)))
+        (def digits
+          (and (not (empty? value))
+               (all |(<= 48 $ 57) (string/bytes value))
+               value))
         (unless digits
           (error "malformed LSP headers: invalid Content-Length"))
         (set content-length (scan-number digits)))))

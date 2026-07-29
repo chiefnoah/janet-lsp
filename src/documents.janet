@@ -5,6 +5,7 @@
 (import ./logging)
 (import ./lookup)
 (import ./position)
+(import ./request-control)
 (import ./server-utils)
 (import ./uri)
 
@@ -131,8 +132,11 @@
         [:noresponse state]))
     [:noresponse state]))
 
-(defn on-diagnostic [state params]
-  (if-let [document (server-utils/document state params)]
+(defn on-diagnostic [state params &opt request-id]
+  (try
+    (do
+      (request-control/checkpoint state request-id)
+      (if-let [document (server-utils/document state params)]
     (let [workspace (server-utils/document-workspace state document)
           snapshot (or (analysis/current document workspace)
                        (refresh state document workspace))
@@ -142,8 +146,12 @@
                    {:kind "full" :resultId result-id
                     :items (snapshot :diagnostics)})]
       (logging/message report [:diagnostics])
+      (request-control/checkpoint state request-id)
       [:ok state report])
     [:ok state :null]))
+    ([err] (if (= :request-cancelled err)
+             [:rpc-error state -32800 "Request cancelled" nil]
+             (error err)))))
 
 (defn- workspace-document-uris [state]
   (def found @{})
@@ -167,7 +175,7 @@
             document {:uri document-uri :path filepath :content content :version nil}]
         [(analysis/build document restricted (state :position-encoding)) :null]))))
 
-(defn on-workspace-diagnostic [state params]
+(defn- workspace-diagnostic [state params request-id]
   (def previous @{})
   (each item (get params "previousResultIds" @[])
     (when (and (string? (get item "uri")) (string? (get item "value")))
@@ -175,6 +183,7 @@
   (def reports @[])
   (def reported @{})
   (each document-uri (workspace-document-uris state)
+    (request-control/checkpoint state request-id)
     (when-let [[snapshot version] (workspace-snapshot state document-uri)]
       (put reported document-uri true)
       (def result-id (snapshot :diagnostic-result-id))
@@ -196,6 +205,12 @@
           {:uri document-uri :version :null :kind "full" :resultId result-id
            :items @[]}))))
   [:ok state {:items reports}])
+
+(defn on-workspace-diagnostic [state params &opt request-id]
+  (try (workspace-diagnostic state params request-id)
+    ([err] (if (= :request-cancelled err)
+             [:rpc-error state -32800 "Request cancelled" nil]
+             (error err)))))
 
 (defn on-formatting [state params]
   (def document (server-utils/document state params))

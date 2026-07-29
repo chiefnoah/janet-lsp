@@ -32,6 +32,8 @@ Format for entires is <version-string> - release date.
   with configurable categories and trust-gated command execution.
 - Expanded conservative inlay hints for static named signatures, literal
   constant values, and explicit return metadata.
+- Added cooperative cancellation checkpoints, per-request source reuse, bounded
+  trusted command execution, and a synthetic large-workspace benchmark.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

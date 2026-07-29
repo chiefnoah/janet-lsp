@@ -120,8 +120,10 @@
         "textDocument/didOpen" (documents/on-open state params)
         "textDocument/didChange" (documents/on-change state params)
         "textDocument/didClose" (documents/on-close state params)
-        "textDocument/diagnostic" (documents/on-diagnostic state params)
-        "workspace/diagnostic" (documents/on-workspace-diagnostic state params)
+        "textDocument/diagnostic"
+        (documents/on-diagnostic state params (get message "id"))
+        "workspace/diagnostic"
+        (documents/on-workspace-diagnostic state params (get message "id"))
         "textDocument/formatting" (documents/on-formatting state params)
         "textDocument/rangeFormatting" (documents/on-range-formatting state params)
         "textDocument/onTypeFormatting" (documents/on-type-formatting state params)
@@ -146,11 +148,13 @@
         "textDocument/typeDefinition" (navigation/on-type-definition state params)
         "textDocument/implementation" (navigation/on-implementation state params)
         "textDocument/documentSymbol" (navigation/on-document-symbols state params)
-        "workspace/symbol" (navigation/on-workspace-symbols state params)
-        "textDocument/references" (navigation/on-references state params)
+        "workspace/symbol" (navigation/on-workspace-symbols state params
+                                                            (get message "id"))
+        "textDocument/references" (navigation/on-references state params
+                                                            (get message "id"))
         "textDocument/documentHighlight" (navigation/on-document-highlights state params)
         "textDocument/prepareRename" (navigation/on-prepare-rename state params)
-        "textDocument/rename" (navigation/on-rename state params)
+        "textDocument/rename" (navigation/on-rename state params (get message "id"))
         "textDocument/foldingRange" (document-features/on-folding-ranges state params)
         "textDocument/selectionRange" (document-features/on-selection-ranges state params)
         "textDocument/documentLink" (document-features/on-document-links state params)
@@ -287,18 +291,64 @@
           ([err fiber] [:error state err fiber]))
         id notification?))))
 
-(defn message-loop [state]
-  (match (read-message)
+(defn- dispatch-loop [state messages]
+  (match (ev/take messages)
+    :eof (do (file/flush stdout) (os/exit 0))
     nil (do (file/flush stdout) (os/exit 0))
     [:parse-error err]
     (do
       (logging/warn (string/format "Invalid JSON: %s" err) [:rpc])
       (write-error :null -32700 "Parse error")
-      (message-loop state))
+      (dispatch-loop state messages))
     [:ok message]
     (match (dispatch-message message state)
       [:exit status] (do (file/flush stdout) (os/exit status))
-      next-state (message-loop next-state))))
+       next-state (dispatch-loop next-state messages))))
+
+(defn- concurrent-message-loop [state]
+  (def incoming (ev/thread-chan 64))
+  (def messages (ev/chan 64))
+  (put state :dispatcher (ev/go |(dispatch-loop state messages)))
+  (ev/thread
+    (fn []
+      (forever
+        (match (read-message)
+          nil (do (ev/give incoming :eof) (break))
+          [:ok message]
+          (do (ev/give incoming [:ok message])
+              (when (= "exit" (get message "method")) (break)))
+          parsed (ev/give incoming parsed))))
+    nil :n)
+  (forever
+    (match (ev/take incoming)
+      :eof (do (ev/give messages :eof) (ev/sleep 3600))
+      [:ok message]
+      (cond
+        (= "$/cancelRequest" (get message "method"))
+        (do (on-cancel-request state (get message "params")) (ev/sleep 0))
+        (= "exit" (get message "method"))
+        (match (dispatch-message message state)
+          [:exit status] (do (ev/sleep 0.01) (file/flush stdout) (os/exit status))
+          _ nil)
+        (do (ev/give messages [:ok message]) (ev/sleep 0)))
+      parsed (do (ev/give messages parsed) (ev/sleep 0)))))
+
+(defn- synchronous-message-loop [state]
+  (match (read-message)
+    nil (do (file/flush stdout) (os/exit 0))
+    [:parse-error err]
+    (do (logging/warn (string/format "Invalid JSON: %s" err) [:rpc])
+        (write-error :null -32700 "Parse error")
+        (synchronous-message-loop state))
+    [:ok message]
+    (match (dispatch-message message state)
+      [:exit status] (do (file/flush stdout) (os/exit status))
+      next-state (synchronous-message-loop next-state))))
+
+(defn message-loop [state]
+  (if (dyn :debug)
+    (synchronous-message-loop state)
+    (concurrent-message-loop state)))
 
 (defn start-language-server []
   (logging/info (string "Starting LSP " server-meta/version "-" server-meta/commit) [:core])

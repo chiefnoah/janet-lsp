@@ -2,6 +2,7 @@
 (import ./document-features)
 (import ./index)
 (import ./lookup)
+(import ./request-control)
 (import ./server-utils)
 (import ./uri)
 (import spork/path)
@@ -125,6 +126,7 @@
             :references
             (let [identity (get-in lens ["data" "identity"])
                   definition (index/definition-by-identity workspace identity)
+                  sources @{}
                   locations
                   (catseq [reference :in
                            (index/references-by-identity workspace identity)
@@ -132,7 +134,8 @@
                                            (= (definition :uri) (reference :uri))
                                            (deep= (definition :selection-range)
                                                   (reference :range))))
-                           :let [content (server-utils/content state (reference :uri))]
+                           :let [content (request-control/content
+                                          state sources (reference :uri))]
                            :when content]
                     {:uri (reference :uri)
                      :range (server-utils/lsp-range state content (reference :range))})
@@ -171,6 +174,21 @@
     "janet-lsp.runDefinition" :run
     nil))
 
+(defn- read-bounded [stream]
+  (def limit 1048576)
+  (def output @"")
+  (var total 0)
+  (var chunk (ev/read stream 65536 nil 30))
+  (while chunk
+    (+= total (length chunk))
+    (when (< (length output) limit)
+      (buffer/push-string output
+                          (string/slice chunk 0
+                                        (min (length chunk)
+                                             (- limit (length output))))))
+    (set chunk (ev/read stream 65536 nil 30)))
+  {:text (string output) :truncated (> total limit)})
+
 (defn on-execute-command [state params]
   (def command (get params "command"))
   (def arguments (get params "arguments" @[]))
@@ -200,16 +218,22 @@
                        [(if (os/stat judge) judge "judge")
                         "--name-exact" name filepath]
                        ["janet" "-e" expression])]
+            (var process nil)
             (match (try
-                     (let [process (os/spawn argv :xp {:cwd (workspace :path)
-                                                       :out :pipe :err :pipe})
-                           [stdout stderr status]
-                           (ev/gather (ev/read (process :out) :all)
-                                      (ev/read (process :err) :all)
-                                      (os/proc-wait process))]
+                     (ev/with-deadline 30
+                       (set process (os/spawn argv :xp {:cwd (workspace :path)
+                                                        :out :pipe :err :pipe}))
+                       (def [stdout stderr status]
+                         (ev/gather (read-bounded (process :out))
+                                    (read-bounded (process :err))
+                                    (os/proc-wait process)))
                        [:ok {:exitCode status
-                             :stdout (or stdout "") :stderr (or stderr "")}])
-                     ([error] [:error error]))
+                             :stdout (stdout :text) :stderr (stderr :text)
+                             :stdoutTruncated (stdout :truncated)
+                             :stderrTruncated (stderr :truncated)}])
+                     ([error]
+                      (do (when process (try (os/proc-kill process true) ([_] nil)))
+                          [:error error])))
               [:ok result] [:ok state result]
               [:error error]
               [:rpc-error state -32603 "Command failed to start" (string error)])))))

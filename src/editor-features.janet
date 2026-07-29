@@ -117,8 +117,12 @@
                                       (state :position-encoding))))
   (if (and request-id (has-key? (state :cancelled-requests) request-id))
     [:cancelled]
-    [:ok (semantic-tokens/encode state (document :content)
-                                 (snapshot :semantic) requested request-id)]))
+    (try
+      [:ok (semantic-tokens/encode state (document :content)
+                                   (snapshot :semantic) requested request-id)]
+      ([err] (if (= :request-cancelled err)
+               [:cancelled]
+               (error err))))))
 
 (defn- remember-semantic-result [state result-id data]
   (unless (get (state :semantic-token-results) result-id)
