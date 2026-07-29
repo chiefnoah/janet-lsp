@@ -456,6 +456,81 @@
                @{:index @{} :cache-current true :path nil} root-env))
         @["undefined symbol local-missing"]))
 
+(deftest "index callable identities and executable call sites"
+  (def document-uri "file:///calls.janet")
+  (def source
+    (string "(defn target [x] (target x))\n"
+            "(defmacro expand [x] x)\n"
+            "(defn caller [x]\n"
+            "  (target x)\n"
+            "  (expand x)\n"
+            "  (let [local (fn [y] (target y))]\n"
+            "    (local x))\n"
+            "  '(target x)\n"
+            "  ~(do ,(target x)))\n"))
+  (def record (index/analyze document-uri source))
+  (def workspace @{:index @{document-uri record}})
+  (index/relink workspace)
+  (test (map |[($ :name) ($ :local)] (record :callables))
+        @[["target" false] ["expand" false] ["caller" false] ["local" true]])
+  (def caller (first (filter |(= "caller" ($ :name)) (record :callables))))
+  (def local (first (filter |(= "local" ($ :name)) (record :callables))))
+  (test (map |($ :name) (index/outgoing-calls workspace (caller :identity)))
+        @["target" "expand" "local" "target"])
+  (test (map |($ :name) (index/outgoing-calls workspace (local :identity)))
+        @["target"])
+  (test (length (index/incoming-calls
+                  workspace
+                  (get-in record [:callables 0 :identity])))
+        4)
+
+  (def duplicate-uri "file:///duplicates.janet")
+  (def duplicate-record
+    (index/analyze duplicate-uri
+                   "(defn same [] nil)\n(defn same [] nil)\n(defn invoke [] (same))\n"))
+  (def duplicate-workspace @{:index @{duplicate-uri duplicate-record}})
+  (index/relink duplicate-workspace)
+  (def invoke
+    (first (filter |(= "invoke" ($ :name)) (duplicate-record :callables))))
+  (test (index/outgoing-calls duplicate-workspace (invoke :identity)) @[])
+
+  (def nested-uri "file:///nested-calls.janet")
+  (def nested-record
+    (index/analyze
+      nested-uri
+      (string "(defn target [] nil)\n"
+              "(defn outer []\n"
+              "  (let [a (fn [] (let [b (fn [] (target))] (b)))] (a))\n"
+              "  (if-let [conditional (fn [] (target))] (conditional)))\n")))
+  (def nested-workspace @{:index @{nested-uri nested-record}})
+  (index/relink nested-workspace)
+  (def nested-by-name
+    (fn [name] (filter |(= name ($ :name)) (nested-record :callables))))
+  (test (length (nested-by-name "b")) 1)
+  (test (length (nested-by-name "conditional")) 1)
+  (test (map |($ :name)
+             (index/outgoing-calls nested-workspace
+                                   (get-in (nested-by-name "a") [0 :identity])))
+        @["b"])
+  (test (map |($ :name)
+             (index/outgoing-calls
+               nested-workspace
+               (get-in (nested-by-name "conditional") [0 :identity])))
+        @["target"])
+
+  (def named-record
+    (index/analyze
+      "file:///nested-named.janet"
+      (string "(defn left [] (defn inner [] nil) (inner))\n"
+              "(defn right [] (defn inner [] nil) (inner))\n")))
+  (def named-workspace @{:index @{(named-record :uri) named-record}})
+  (index/relink named-workspace)
+  (each name ["left" "right"]
+    (def callable (first (filter |(= name ($ :name)) (named-record :callables))))
+    (test (map |($ :name)
+               (index/outgoing-calls named-workspace (callable :identity)))
+          @["inner"])))
+
 (deftest "validate safe positional and named calls"
   (def source
     (string "(defn exact [a] nil)\n"

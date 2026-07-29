@@ -2,7 +2,7 @@
 (import ./uri)
 (import spork/path)
 
-(def format-version 2)
+(def format-version 3)
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
@@ -85,6 +85,26 @@
        (has-value? [true false] (imported :top-level))
        (range? (imported :range))))
 
+(defn- callable? [callable document-uri]
+  (and (dictionary? callable)
+       (= document-uri (callable :uri))
+       (string? (callable :name))
+       (string? (callable :identity))
+       (number? (callable :kind))
+       (string? (callable :form))
+       (has-value? [true false] (callable :local))
+       (range? (callable :range))
+       (range? (callable :selection-range))
+       (or (nil? (callable :scope-range)) (range? (callable :scope-range)))))
+
+(defn- call? [call document-uri]
+  (and (dictionary? call)
+       (= document-uri (call :uri))
+       (string? (call :name))
+       (or (nil? (call :caller)) (string? (call :caller)))
+       (or (nil? (call :identity)) (string? (call :identity)))
+       (range? (call :range))))
+
 (defn- record? [record document-uri]
   (and (dictionary? record)
        (= document-uri (record :uri))
@@ -92,9 +112,13 @@
        (indexed? (record :definitions))
        (indexed? (record :references))
        (indexed? (record :imports))
+       (indexed? (record :callables))
+       (indexed? (record :calls))
        (all |(definition? $ document-uri) (record :definitions))
        (all |(reference? $ document-uri) (record :references))
-       (all import? (record :imports))))
+       (all import? (record :imports))
+       (all |(callable? $ document-uri) (record :callables))
+       (all |(call? $ document-uri) (record :calls))))
 
 (defn- envelope? [envelope root-uri exclusions]
   (and (dictionary? envelope)

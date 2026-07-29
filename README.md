@@ -18,6 +18,8 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Document/workspace symbols, binding-aware references, and workspace rename
 - Binding-aware document highlights, structural folding and selection ranges,
   and links for indexed modules and explicit source paths
+- Binding-aware incoming and outgoing call hierarchy for functions, macros,
+  imports, recursion, and local lambdas
 - Full-document semantic tokens and deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis

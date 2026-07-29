@@ -37,6 +37,7 @@
   (test (get-in initialize [:result :capabilities :documentHighlightProvider]) true)
   (test (get-in initialize [:result :capabilities :foldingRangeProvider]) true)
   (test (get-in initialize [:result :capabilities :selectionRangeProvider]) true)
+  (test (get-in initialize [:result :capabilities :callHierarchyProvider]) true)
   (test (get-in initialize
                 [:result :capabilities :documentLinkProvider :resolveProvider])
         false)
@@ -838,6 +839,127 @@
               :context {:includeDeclaration true}}))
   (test (length (get-in updated [:result])) 2)
   (exit-lsp cursor))
+
+(deftest "prepare and traverse binding-aware call hierarchies"
+  (def base (temp-directory "janet-lsp-call-hierarchy"))
+  (def root-a (path/join base "a"))
+  (def root-b (path/join base "b"))
+  (os/mkdir root-a)
+  (os/mkdir root-b)
+  (def lib-source
+    (string "(defn target [x] (target x))\n"
+            "(defmacro expand [x] x)\n"))
+  (def main-source
+    (string "(import ./lib :as lib)\n"
+            "(defn caller [x]\n"
+            "  (lib/target x)\n"
+            "  (lib/target x)\n"
+            "  (lib/expand x)\n"
+            "  (let [local (fn [y] (lib/target y))]\n"
+            "    (local x))\n"
+            "  '(lib/target x)\n"
+            "  (missing x))\n"
+            "(defn same [] nil)\n"
+            "(defn same [] nil)\n"
+            "(defn ambiguous [] (same))\n"))
+  (def other-source
+    "(defn target [x] x)\n(defn other [x] (target x))\n")
+  (spit (path/join root-a "lib.janet") lib-source)
+  (spit (path/join root-a "main.janet") main-source)
+  (spit (path/join root-b "main.janet") other-source)
+  (def uri-a (uri/path->file-uri root-a))
+  (def uri-b (uri/path->file-uri root-b))
+  (def lib-uri (uri/path->file-uri (path/join root-a "lib.janet")))
+  (def main-uri (uri/path->file-uri (path/join root-a "main.janet")))
+  (def other-uri (uri/path->file-uri (path/join root-b "main.janet")))
+  (each [root root-uri] [[root-a uri-a] [root-b uri-b]]
+    (index-cache/write (index-cache/path-for root-uri) root-uri
+                       index/default-exclusions
+                       (index/scan root index/default-exclusions)))
+  (def cursor (spawn-lsp))
+  (def initialized
+    (request cursor 237 "initialize"
+             {:rootUri nil
+              :workspaceFolders [{:uri uri-a :name "a"}
+                                 {:uri uri-b :name "b"}]
+              :capabilities {:textDocument {:diagnostic {}}}}))
+  (test (get-in initialized [:result :capabilities :callHierarchyProvider]) true)
+  (open-text-document cursor lib-uri lib-source)
+  (open-text-document cursor main-uri main-source)
+  (open-text-document cursor other-uri other-source)
+
+  (def prepared-target
+    (get-in
+      (request cursor 238 "textDocument/prepareCallHierarchy"
+               {:textDocument {:uri main-uri}
+                :position {:line 2 :character 8}})
+      [:result 0]))
+  (test (get prepared-target :name) "target")
+  (test (= (get prepared-target :uri) lib-uri) true)
+
+  (def incoming
+    (get-in (request cursor 239 "callHierarchy/incomingCalls"
+                     {:item prepared-target})
+            [:result]))
+  (test (map |[(get-in $ [:from :name]) (length ($ :fromRanges))] incoming)
+        @[["caller" 2] ["local" 1] ["target" 1]])
+  (test (all |(or (= lib-uri (get-in $ [:from :uri]))
+                  (= main-uri (get-in $ [:from :uri])))
+             incoming)
+        true)
+  (test (has-value? (map |(get-in $ [:from :uri]) incoming) other-uri) false)
+
+  (def prepared-caller
+    (get-in
+      (request cursor 240 "textDocument/prepareCallHierarchy"
+               {:textDocument {:uri main-uri}
+                :position {:line 1 :character 8}})
+      [:result 0]))
+  (def outgoing
+    (get-in (request cursor 241 "callHierarchy/outgoingCalls"
+                     {:item prepared-caller})
+            [:result]))
+  (test (map |[(get-in $ [:to :name]) (length ($ :toRanges))] outgoing)
+        @[["expand" 1] ["local" 1] ["target" 2]])
+
+  (def prepared-local
+    (get-in
+      (request cursor 242 "textDocument/prepareCallHierarchy"
+               {:textDocument {:uri main-uri}
+                :position {:line 6 :character 7}})
+      [:result 0]))
+  (test (get prepared-local :name) "local")
+  (test (get-in prepared-local [:range :start :character]) 8)
+  (test (get-in prepared-local [:selectionRange :start :character]) 8)
+  (test (> (get-in prepared-local [:range :end :character])
+           (get-in prepared-local [:selectionRange :end :character]))
+        true)
+  (def local-outgoing
+    (get-in (request cursor 243 "callHierarchy/outgoingCalls"
+                     {:item prepared-local})
+            [:result]))
+  (test (map |(get-in $ [:to :name]) local-outgoing) @["target"])
+
+  (test (get-in
+          (request cursor 244 "textDocument/prepareCallHierarchy"
+                   {:textDocument {:uri main-uri}
+                    :position {:line 8 :character 4}})
+          [:result])
+        :null)
+  (def ambiguous
+    (get-in
+      (request cursor 245 "textDocument/prepareCallHierarchy"
+               {:textDocument {:uri main-uri}
+                :position {:line 11 :character 22}})
+      [:result]))
+  (test ambiguous :null)
+
+  (notify cursor "$/cancelRequest" {:id 246})
+  (def cancelled
+    (request cursor 246 "callHierarchy/incomingCalls" {:item prepared-target}))
+  (test (get-in cancelled [:error :code]) -32800)
+  (exit-lsp cursor)
+  (remove-tree base))
 
 (deftest "highlight bindings and return structural ranges"
   (def cursor

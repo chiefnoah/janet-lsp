@@ -109,6 +109,7 @@
       :foldingRangeProvider true
       :selectionRangeProvider true
       :documentLinkProvider {:resolveProvider false}
+      :callHierarchyProvider true
       :renameProvider {:prepareProvider true}
       :semanticTokensProvider
       {:legend {:tokenTypes server-meta/semantic-token-types

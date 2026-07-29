@@ -4,6 +4,7 @@
 
 (import ./documents)
 (import ./document-features)
+(import ./call-hierarchy)
 (import ./editor-features)
 (import ./lifecycle)
 (import ./logging)
@@ -73,7 +74,8 @@
    "textDocument/documentHighlight" true
    "textDocument/foldingRange" true
    "textDocument/selectionRange" true
-   "textDocument/documentLink" true})
+   "textDocument/documentLink" true
+   "textDocument/prepareCallHierarchy" true})
 
 (def position-methods
   {"textDocument/completion" true
@@ -82,6 +84,7 @@
    "textDocument/definition" true
    "textDocument/references" true
    "textDocument/documentHighlight" true
+   "textDocument/prepareCallHierarchy" true
    "textDocument/prepareRename" true
    "textDocument/rename" true})
 
@@ -127,6 +130,11 @@
         "textDocument/foldingRange" (document-features/on-folding-ranges state params)
         "textDocument/selectionRange" (document-features/on-selection-ranges state params)
         "textDocument/documentLink" (document-features/on-document-links state params)
+        "textDocument/prepareCallHierarchy" (call-hierarchy/on-prepare state params)
+        "callHierarchy/incomingCalls"
+        (call-hierarchy/on-incoming state params (get message "id"))
+        "callHierarchy/outgoingCalls"
+        (call-hierarchy/on-outgoing state params (get message "id"))
 
         "workspace/didChangeWorkspaceFolders" (workspace/on-folders-changed state params)
         "workspace/didChangeWatchedFiles" (workspace/on-watched-files-changed state params)

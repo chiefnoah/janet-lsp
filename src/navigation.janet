@@ -6,7 +6,7 @@
 (import ./uri)
 (import spork/path)
 
-(defn- symbol-context [state params]
+(defn symbol-context [state params]
   (def document-uri (server-utils/document-uri params))
   (def document (server-utils/document state params))
   (def content (document :content))

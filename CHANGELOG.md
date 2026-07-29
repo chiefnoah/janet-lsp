@@ -16,6 +16,8 @@ Format for entires is <version-string> - release date.
   tokens, deterministic quick fixes, and conservative inlay hints.
 - Added binding-aware document highlights, nested syntax and comment folding,
   progressive selection ranges, and execution-free module/source links.
+- Added indexed call hierarchy with incoming and outgoing calls for local,
+  imported, recursive, and macro callables.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

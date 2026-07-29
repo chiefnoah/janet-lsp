@@ -178,12 +178,165 @@
 (defn- same-position? [a b]
   (and a b (= (a :line) (b :line)) (= (a :character) (b :character))))
 
+(defn- local-identity [document-uri range]
+  (string document-uri "#local:"
+          (get-in range [:start :line]) ":"
+          (get-in range [:start :character])))
+
+(defn- definition-at-node [definitions node source]
+  (when (and (number? (node :index)) (number? (node :len)))
+    (def start (get-in (node-range node source) [:start]))
+    (first (filter |(same-position?
+                      start (get-in $ [:range :start]))
+                   definitions))))
+
+(defn- callable-record [document-uri name identity range selection-range form local]
+  {:name name
+   :uri document-uri
+   :identity identity
+   :kind 12
+   :form form
+   :local local
+   :range range
+   :selection-range selection-range})
+
+(defn- local-callables [node document-uri source]
+  (def found @[])
+  (def scope-range (and (number? (node :index)) (node-range node source)))
+  (def direct-head
+    (and (= :ptuple (node :tag)) (leaf? (get-in node [:value 0]))
+         (get-in node [:value 0 :value])))
+  (def [bindings expressions]
+    (cond
+      (has-value? [:let :loop] (node :tag))
+      [(get-in (first (filter |(= :parameters ($ :tag)) (node :value)))
+               [:value] @[])
+       (get-in (first (filter |(= :expr ($ :tag)) (node :value)))
+               [:value] @[])]
+
+      (has-value? ["if-let" "when-let"] direct-head)
+      (let [binding-form (get-in node [:value 1 :value] @[])]
+        [(map |(get binding-form $) (range 0 (length binding-form) 2))
+         (map |(get binding-form $) (range 1 (length binding-form) 2))])
+
+      [@[] @[]]))
+  (when (not (empty? bindings))
+    # Destructuring flattens leaves, so only aligned simple bindings are safe.
+    (when (= (length bindings) (length expressions))
+      (eachp [index binding] bindings
+        (def expression (get expressions index))
+        (when (and (leaf? binding) (dictionary? expression)
+                   (= :lambda (expression :tag)))
+          (def selection-range (node-range binding source))
+          (array/push
+            found
+            {:node-index (expression :index)
+             :callable
+             (merge
+               (callable-record document-uri (binding :value)
+                                (local-identity document-uri selection-range)
+                                {:start (selection-range :start)
+                                 :end (get-in (node-range expression source) [:end])}
+                                selection-range
+                                "fn" true)
+               {:scope-range scope-range})})))))
+  found)
+
+(varfn collect-call-data [])
+
+(varfn collect-call-data
+  [node document-uri source definitions callables calls caller caller-overrides
+   quoted qdepth]
+  (when (dictionary? node)
+    (def found (definition-at-node definitions node source))
+    (def form-head (and found (found :form)))
+    (def executable (and (not quoted) (= 0 qdepth)))
+    (var body-caller caller)
+    (when (and executable found (get function-heads form-head))
+      (array/push callables
+                  (callable-record document-uri (found :name) (found :identity)
+                                   (found :range) (found :selection-range)
+                                   form-head (not (found :top-level))))
+      (set body-caller (found :identity)))
+
+    (def lambda-callers @{})
+    (eachp [node-index identity] caller-overrides
+      (put lambda-callers node-index identity))
+    (when executable
+      (each local (local-callables node document-uri source)
+        (def callable (local :callable))
+        (array/push callables callable)
+        (put lambda-callers (local :node-index) (callable :identity))))
+
+    # `(def name (fn ...))` is callable although its indexed symbol kind is a value.
+    (when (and executable found (not (get function-heads form-head))
+               (indexed? (node :value)))
+      (when-let [lambda (first (filter |(and (dictionary? $) (= :lambda ($ :tag)))
+                                       (node :value)))]
+        (array/push callables
+                    (callable-record document-uri (found :name) (found :identity)
+                                     (found :range) (found :selection-range)
+                                     form-head false))
+        (put lambda-callers (lambda :index) (found :identity))))
+
+    (def values (node :value))
+    (cond
+      (= :rmform (node :tag))
+      (when-let [reader (get values 0)
+                 child (first (filter dictionary? values))]
+        (cond
+          (= "'" reader)
+          (collect-call-data child document-uri source definitions callables calls
+                             body-caller lambda-callers true qdepth)
+          (= "~" reader)
+          (collect-call-data child document-uri source definitions callables calls
+                             body-caller lambda-callers quoted (inc qdepth))
+          (has-value? ["," ";"] reader)
+          (when (> qdepth 0)
+            (collect-call-data child document-uri source definitions callables calls
+                               body-caller lambda-callers quoted (dec qdepth)))
+          (collect-call-data child document-uri source definitions callables calls
+                             body-caller lambda-callers quoted qdepth)))
+
+      (indexed? values)
+      (do
+        (def direct-head
+          (and (= :ptuple (node :tag))
+               (dictionary? (get values 0))
+               (leaf? (get values 0))
+               (get-in values [0 :value])))
+        (when (and direct-head (not found) (not quoted) (= 0 qdepth)
+                   (not (has-value? ["quote" "quasiquote" "unquote" "splice"]
+                                    direct-head)))
+          (array/push calls @{:name direct-head
+                              :uri document-uri
+                              :caller body-caller
+                              :range (node-range (values 0) source)}))
+        (def child-quoted
+          (or quoted
+              (= "quote" direct-head)
+              (and (= 0 qdepth) (has-value? ["unquote" "splice"] direct-head))))
+        (def child-qdepth
+          (cond
+            (= "quasiquote" direct-head) (inc qdepth)
+            (and (has-value? ["unquote" "splice"] direct-head) (> qdepth 0))
+            (dec qdepth)
+            qdepth))
+        (each child values
+          (when (dictionary? child)
+            (collect-call-data
+              child document-uri source definitions callables calls
+              (or (get lambda-callers (child :index)) body-caller)
+              lambda-callers child-quoted child-qdepth))))))
+  [callables calls])
+
 (defn analyze [document-uri content &opt syntax-tree]
+  (def tree (or syntax-tree (parser/syntax-tree content)))
   (def definitions @[])
   (def references @[])
   (def imports @[])
   (try
-    (each node ((or syntax-tree (parser/syntax-tree content)) :value)
+    (each node (tree :value)
       (collect-nodes node document-uri content definitions references imports 0 nil))
     ([_] nil))
   (each reference references
@@ -196,8 +349,7 @@
         (put reference :identity (declared :identity))
         (put reference :identity-kind :definition))
       (if-let [binding
-               (parser/binding-at (get-in reference [:range :start]) content
-                                  syntax-tree)]
+               (parser/binding-at (get-in reference [:range :start]) content tree)]
         (do
           (put reference :identity
                (string document-uri "#local:"
@@ -219,11 +371,26 @@
                          (get-in resolved [:range :start :line]) ":"
                          (get-in resolved [:range :start :character]))))
           (put reference :identity-kind (if definition :definition :local))))))
+  (def callables @[])
+  (def calls @[])
+  (try
+    (each node (tree :value)
+      (collect-call-data node document-uri content definitions callables calls
+                         nil @{} false 0))
+    ([_] nil))
+  (each call calls
+    (when-let [reference
+               (first (filter |(same-position? (get-in call [:range :start])
+                                              (get-in $ [:range :start]))
+                              references))]
+      (put call :identity (reference :identity))))
   {:uri document-uri
    :content-hash (content-hash content)
    :definitions definitions
    :references references
-   :imports imports})
+   :imports imports
+   :callables callables
+   :calls calls})
 
 (defn- module-candidates [document-uri module]
   (when-let [document-path (uri/file-uri->path document-uri)]
@@ -317,6 +484,23 @@
            (and (position-before? (get-in imported [:range :start]) position)
                 (position-before? position (get-in imported [:range :end]))))))
 
+(defn- range-contains? [outer inner]
+  (and outer inner
+       (position-before? (outer :start) (inner :start))
+       (position-before? (inner :end) (outer :end))))
+
+(defn- scoped-local-callable [record name range]
+  (last
+    (sort-by |[(get-in $ [:selection-range :start :line])
+               (get-in $ [:selection-range :start :character])]
+             (filter |(and ($ :local)
+                           (= name ($ :name))
+                           ($ :scope-range)
+                           (range-contains? ($ :scope-range) range)
+                           (position-before? (get-in $ [:selection-range :start])
+                                             (range :start)))
+                     (get record :callables @[])))))
+
 (defn resolve-definition [workspace document-uri name &opt position]
   (def record (get (workspace :index) document-uri))
   (or (definition-in workspace document-uri name)
@@ -354,11 +538,69 @@
         (put reference :identity nil)
         (put reference :identity-kind nil))
       (unless (reference :identity)
-        (when-let [definition
-                   (resolve-definition workspace (record :uri) (reference :name)
-                                       (get-in reference [:range :start]))]
-          (put reference :identity (definition :identity))
-          (put reference :identity-kind :import)))))
+        (if-let [local (scoped-local-callable record (reference :name)
+                                              (reference :range))]
+          (do
+            (put reference :identity (local :identity))
+            (put reference :identity-kind :local))
+          (when-let [definition
+                     (resolve-definition workspace (record :uri) (reference :name)
+                                         (get-in reference [:range :start]))]
+            (put reference :identity (definition :identity))
+            (put reference :identity-kind :import))))))
+  (def all-callables
+    (catseq [record :in (values (workspace :index))
+             callable :in (get record :callables @[])]
+      callable))
+  (each record (values (workspace :index))
+    (each call (get record :calls @[])
+      (put call :identity nil)
+      (when-let [reference
+                 (first (filter |(same-position? (get-in call [:range :start])
+                                                (get-in $ [:range :start]))
+                                (record :references)))
+                 identity (reference :identity)
+                 target (first (filter |(= identity ($ :identity)) all-callables))]
+        (def unresolved-import?
+          (any? (map |(and (visible-import? $ (get-in call [:range :start]))
+                           (has-value? ["import" "import*"] ($ :kind))
+                           (not (empty? ($ :prefix)))
+                           (string/has-prefix? ($ :prefix) (call :name))
+                           (nil? (module-uri workspace (record :uri) ($ :module))))
+                     (get record :imports @[]))))
+        (def fallback-name (last (string/split "/" (call :name))))
+        (def imported-identities
+          (distinct
+            (catseq [imported :in (get record :imports @[])
+                     :when (and (visible-import? imported (get-in call [:range :start]))
+                                (has-value? ["import" "import*" "use"]
+                                            (imported :kind))
+                                (string/has-prefix? (imported :prefix) (call :name)))
+                     :let [target-name
+                           (string/slice (call :name) (length (imported :prefix)))]
+                     :when (and (not (empty? target-name))
+                                (or (empty? (imported :only))
+                                    (has-value? (imported :only) target-name)))
+                     :let [target-uri
+                           (module-uri workspace (record :uri) (imported :module))
+                           definition
+                           (and target-uri
+                                (exported-definition workspace target-uri target-name @{}))]
+                     :when definition]
+              (definition :identity))))
+        (def duplicate?
+          (or (and (not (target :local))
+                   (> (length (filter |(and (= (target :uri) ($ :uri))
+                                             (= (target :name) ($ :name))
+                                             (not ($ :local)))
+                                      all-callables))
+                      1))
+              (and unresolved-import?
+                   (not= 1 (length (filter |(and (= fallback-name ($ :name))
+                                                 (not ($ :local)))
+                                          all-callables))))
+              (> (length imported-identities) 1)))
+        (unless duplicate? (put call :identity identity)))))
   workspace)
 
 (defn update [workspace document-uri content]
@@ -420,6 +662,26 @@
            reference :in (record :references)
            :when (= identity (reference :identity))]
     reference))
+
+(defn callables [workspace]
+  (catseq [record :in (values (workspace :index))
+           callable :in (get record :callables @[])]
+    callable))
+
+(defn callable-by-identity [workspace identity]
+  (first (filter |(= identity ($ :identity)) (callables workspace))))
+
+(defn incoming-calls [workspace identity]
+  (catseq [record :in (values (workspace :index))
+           call :in (get record :calls @[])
+           :when (= identity (call :identity))]
+    call))
+
+(defn outgoing-calls [workspace identity]
+  (catseq [record :in (values (workspace :index))
+           call :in (get record :calls @[])
+           :when (and (= identity (call :caller)) (call :identity))]
+    call))
 
 (defn files [root exclusions]
   (unless (os/stat root)
