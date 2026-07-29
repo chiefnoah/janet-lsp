@@ -266,7 +266,11 @@
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
   (unless (rpc/response? message)
-    (workspace/refresh-scans state))
+    (try (workspace/refresh-scans state)
+      ([err fiber]
+        (logging/err (string/format "Could not refresh workspace indexes: %m" err)
+                     [:index])
+        (debug/stacktrace fiber err ""))))
   (cond
     (rpc/response? message)
     (workspace/handle-client-response message state)
@@ -291,6 +295,14 @@
           ([err fiber] [:error state err fiber]))
         id notification?))))
 
+(defn- next-state [current candidate]
+  (if (dictionary? candidate)
+    candidate
+    (do
+      (logging/err (string/format "Message handler returned invalid state: %m" candidate)
+                   [:core])
+      current)))
+
 (defn- dispatch-loop [state messages]
   (match (ev/take messages)
     :eof (do (file/flush stdout) (os/exit 0))
@@ -303,7 +315,7 @@
     [:ok message]
     (match (dispatch-message message state)
       [:exit status] (do (file/flush stdout) (os/exit status))
-       next-state (dispatch-loop next-state messages))))
+      candidate (dispatch-loop (next-state state candidate) messages))))
 
 (defn- concurrent-message-loop [state]
   (def incoming (ev/thread-chan 64))
@@ -343,7 +355,7 @@
     [:ok message]
     (match (dispatch-message message state)
       [:exit status] (do (file/flush stdout) (os/exit status))
-      next-state (synchronous-message-loop next-state))))
+      candidate (synchronous-message-loop (next-state state candidate)))))
 
 (defn message-loop [state]
   (if (dyn :debug)
