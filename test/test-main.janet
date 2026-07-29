@@ -114,6 +114,7 @@
   (test (analysis/current document workspace) nil))
 
 (deftest "index definitions and code references"
+  (test (has-value? index/default-exclusions ".direnv") true)
   (def record
     (index/analyze "file:///workspace/main.janet"
                    "(def value 1)\n(defn run [x] (+ value x))\n# value\n\"value\"\n"))

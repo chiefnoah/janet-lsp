@@ -319,7 +319,7 @@
   (visit (or tree (syntax-tree source)) false)
   found)
 
-(defn binding-ranges [tree source]
+(defn binding-ranges [tree source &opt line-starts]
   "Collect parser-recognized binding leaves by name."
   (def found @{})
   (defn visit [node binding? scope]
@@ -334,10 +334,13 @@
           (unless (get found (node :value)) (put found (node :value) @[]))
           (array/push (get found (node :value))
                       {:name (node :value)
+                       :index (node :index)
+                       :end-index (+ (node :index) (node :len))
                        :scope scope
-                       :range {:start (lookup/from-index (node :index) source)
+                       :range {:start (lookup/from-index (node :index) source line-starts)
                                :end (lookup/from-index
-                                      (+ (node :index) (node :len)) source)}}))
+                                      (+ (node :index) (node :len)) source
+                                      line-starts)}}))
         (when (indexed? (node :value))
           (each child (node :value)
             # A named function is bound in its containing scope, not only its body.
@@ -345,6 +348,21 @@
                    (if (= :fn (get child :tag)) scope next-scope)))))))
   (visit tree false nil)
   found)
+
+(defn binding-at-index [bindings name index]
+  "Return the parser-recognized binding at an exact byte offset."
+  (when-let [binding
+             (first (filter |(= index ($ :index)) (get bindings name @[])))]
+    (binding :range)))
+
+(defn binding-definition-at-index [bindings name index]
+  "Resolve the nearest preceding binding whose lexical scope contains index."
+  (last
+    (filter |(and (<= ($ :end-index) index)
+                  (or (nil? ($ :scope))
+                      (and (<= (get-in $ [:scope 0]) index)
+                           (< index (get-in $ [:scope 1])))))
+            (get bindings name @[]))))
 
 (defn- binding-nodes [heads]
   (array/concat

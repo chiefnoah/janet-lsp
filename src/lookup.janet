@@ -182,7 +182,25 @@
     (comment prin "character-pos: ") (comment pp character-pos)
     (+ character-pos pre-length)))
 
-(defn from-index [index source]
-  (def before (string/slice source 0 (min index (length source))))
-  (def lines (string/split "\n" before))
-  {:line (dec (length lines)) :character (length (last lines))})
+(defn line-starts [source]
+  "Return byte offsets for the start of every source line."
+  (def starts @[0])
+  (eachp [index byte] (string/bytes source)
+    (when (= 10 byte) (array/push starts (inc index))))
+  starts)
+
+(defn from-index [index source &opt starts]
+  (if starts
+    (let [target (min index (length source))]
+      (var low 0)
+      (var high (length starts))
+      (while (< low high)
+        (def middle (div (+ low high) 2))
+        (if (<= (starts middle) target)
+          (set low (inc middle))
+          (set high middle)))
+      (def line (max 0 (dec low)))
+      {:line line :character (- target (starts line))})
+    (let [before (string/slice source 0 (min index (length source)))
+          lines (string/split "\n" before)]
+      {:line (dec (length lines)) :character (length (last lines))})))

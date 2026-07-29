@@ -301,6 +301,15 @@
 ``)
   (to-index {:character 3 :line 7} sample))
 
+(deftest "convert indexes with precomputed line starts"
+  (def source "ab\ncde\n")
+  (def starts (line-starts source))
+  (test starts @[0 3 7])
+  (def indexes (range (inc (length source))))
+  (test (deep= (map |(from-index $ source starts) indexes)
+               (map |(from-index $ source) indexes))
+        true))
+
 (deftest "test word-peg1"
   (def sample "word not a word")
   (test (peg/match word-peg sample)
