@@ -102,6 +102,29 @@
 
     [:ok state :null]))
 
+(defn- definition-location [state definition]
+  (when-let [content (server-utils/content state (definition :uri))]
+    {:uri (definition :uri)
+     :range (server-utils/lsp-range state content (definition :range))}))
+
+(defn on-type-definition [state params]
+  (def context (symbol-context state params))
+  (if-let [identity (get-in context [:indexed :identity])
+           definition (index/type-definition (context :workspace) identity)
+           location (definition-location state definition)]
+    [:ok state location]
+    [:ok state :null]))
+
+(defn on-implementation [state params]
+  (def context (symbol-context state params))
+  (if-let [identity (get-in context [:indexed :identity])]
+    [:ok state
+     (catseq [definition :in (index/implementations (context :workspace) identity)
+              :let [location (definition-location state definition)]
+              :when location]
+       location)]
+    [:ok state :null]))
+
 (defn- document-symbol [state content definition definitions]
   {:name (definition :name)
    :kind (definition :kind)

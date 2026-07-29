@@ -101,7 +101,9 @@
       :signatureHelpProvider {:triggerCharacters ["(" " "]
                               :retriggerCharacters [" "]}
       :documentFormattingProvider true
-      :definitionProvider true
+       :definitionProvider true
+       :typeDefinitionProvider true
+       :implementationProvider true
       :documentSymbolProvider true
       :workspaceSymbolProvider true
       :referencesProvider true

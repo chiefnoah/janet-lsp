@@ -64,6 +64,8 @@
    "textDocument/hover" true
    "textDocument/signatureHelp" true
    "textDocument/definition" true
+   "textDocument/typeDefinition" true
+   "textDocument/implementation" true
    "textDocument/references" true
    "textDocument/prepareRename" true
    "textDocument/rename" true
@@ -82,6 +84,8 @@
    "textDocument/hover" true
    "textDocument/signatureHelp" true
    "textDocument/definition" true
+   "textDocument/typeDefinition" true
+   "textDocument/implementation" true
    "textDocument/references" true
    "textDocument/documentHighlight" true
    "textDocument/prepareCallHierarchy" true
@@ -121,6 +125,8 @@
         "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
 
         "textDocument/definition" (navigation/on-definition state params)
+        "textDocument/typeDefinition" (navigation/on-type-definition state params)
+        "textDocument/implementation" (navigation/on-implementation state params)
         "textDocument/documentSymbol" (navigation/on-document-symbols state params)
         "workspace/symbol" (navigation/on-workspace-symbols state params)
         "textDocument/references" (navigation/on-references state params)

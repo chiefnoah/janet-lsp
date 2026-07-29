@@ -38,6 +38,8 @@
   (test (get-in initialize [:result :capabilities :foldingRangeProvider]) true)
   (test (get-in initialize [:result :capabilities :selectionRangeProvider]) true)
   (test (get-in initialize [:result :capabilities :callHierarchyProvider]) true)
+  (test (get-in initialize [:result :capabilities :typeDefinitionProvider]) true)
+  (test (get-in initialize [:result :capabilities :implementationProvider]) true)
   (test (get-in initialize
                 [:result :capabilities :documentLinkProvider :resolveProvider])
         false)
@@ -744,6 +746,82 @@
           [:result])
         :null)
   (exit-lsp cursor))
+
+(deftest "navigate explicit type and implementation metadata"
+  (def base (temp-directory "janet-lsp-type-navigation"))
+  (def root-a (path/join base "a"))
+  (def root-b (path/join base "b"))
+  (os/mkdir root-a)
+  (os/mkdir root-b)
+  (def types-source "(def 😀Shape {})\n(def Drawable {})\n")
+  (def main-source
+    (string "(import ./types :as types)\n"
+            "(def 😀circle {:janet-lsp/type-definition \"types/😀Shape\"} {})\n"
+            "(defn draw-circle {:janet-lsp/implements \"types/😀Shape\"} [value] value)\n"
+            "(defn draw-both {:janet-lsp/implements [\"types/😀Shape\" \"types/Drawable\"]} [value] value)\n"
+            "(def ordinary {})\n"
+            "😀circle\n"))
+  (def other-source
+    (string "(def 😀Shape {})\n"
+            "(defn other {:janet-lsp/implements \"😀Shape\"} [value] value)\n"))
+  (spit (path/join root-a "types.janet") types-source)
+  (spit (path/join root-a "main.janet") main-source)
+  (spit (path/join root-b "main.janet") other-source)
+  (def root-uri-a (uri/path->file-uri root-a))
+  (def root-uri-b (uri/path->file-uri root-b))
+  (def types-uri (uri/path->file-uri (path/join root-a "types.janet")))
+  (def main-uri (uri/path->file-uri (path/join root-a "main.janet")))
+  (def other-uri (uri/path->file-uri (path/join root-b "main.janet")))
+  (each [root root-uri] [[root-a root-uri-a] [root-b root-uri-b]]
+    (index-cache/write (index-cache/path-for root-uri) root-uri
+                       index/default-exclusions
+                       (index/scan root index/default-exclusions)))
+  (def cursor (spawn-lsp))
+  (def initialized
+    (request cursor 247 "initialize"
+             {:rootUri nil
+              :workspaceFolders [{:uri root-uri-a :name "a"}
+                                 {:uri root-uri-b :name "b"}]
+              :capabilities {:textDocument {:diagnostic {}}}}))
+  (test (get-in initialized [:result :capabilities :typeDefinitionProvider]) true)
+  (test (get-in initialized [:result :capabilities :implementationProvider]) true)
+  (open-text-document cursor types-uri types-source)
+  (open-text-document cursor main-uri main-source)
+  (open-text-document cursor other-uri other-source)
+
+  (def type-definition
+    (request cursor 248 "textDocument/typeDefinition"
+             {:textDocument {:uri main-uri}
+              :position {:line 5 :character 0}}))
+  (test (= (get-in type-definition [:result :uri]) types-uri) true)
+  (test (get-in type-definition [:result :range :start :line]) 0)
+  (test (get-in type-definition [:result :range :end :character]) 16)
+
+  (def implementations
+    (get-in
+      (request cursor 249 "textDocument/implementation"
+               {:textDocument {:uri types-uri}
+                :position {:line 0 :character 7}})
+      [:result]))
+  (test (and (deep= (map |($ :uri) implementations) @[main-uri main-uri])
+             (deep= (map |(get-in $ [:range :start :line]) implementations) @[2 3]))
+        true)
+  (test (has-value? (map |($ :uri) implementations) other-uri) false)
+
+  (test (get-in
+          (request cursor 250 "textDocument/typeDefinition"
+                   {:textDocument {:uri main-uri}
+                    :position {:line 4 :character 7}})
+          [:result])
+        :null)
+  (test (get-in
+          (request cursor 251 "textDocument/implementation"
+                   {:textDocument {:uri main-uri}
+                    :position {:line 4 :character 7}})
+          [:result])
+        @[])
+  (exit-lsp cursor)
+  (remove-tree base))
 
 (deftest "navigate and rename through resolved module aliases"
   (def cursor (start-lsp {:textDocument {:diagnostic {}}}))

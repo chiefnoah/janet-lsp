@@ -14,6 +14,7 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Push and pull parse, compile, warning, and bounded runtime diagnostics
 - Whole-document formatting
 - Local, imported, indexed, and runtime source-map definition lookup
+- Explicit source-indexed type-definition and implementation navigation
 - Parser-backed multiline symbols, module aliases, selective imports, and re-exports
 - Document/workspace symbols, binding-aware references, and workspace rename
 - Binding-aware document highlights, structural folding and selection ranges,
@@ -140,13 +141,36 @@ or executing modules. It completes indexed paths in `import`, `use`, `require`,
 and `dofile`, imported aliases and public module members, selective `:only`
 exports, binding markers, observed keywords, table keys, and binding metadata.
 Private definitions declared with a `-` form or `:private` metadata are excluded.
-
 Clients advertising snippet support receive Janet form snippets for common
 forms such as `defn`, `fn`, `let`, and `if`. General expression completion is
 ranked by lexical scope, imported-module proximity, workspace usage, and stable
 label order. A unique missing workspace export may include a version-aware
 `additionalTextEdits` import; overlapping first-line edits are not offered, and
 stale import edits are removed during completion resolution.
+
+### Type Navigation
+
+Janet has no native type, interface, or protocol declarations, so Janet LSP does
+not infer types from runtime values, table keys, prototype naming, or structural
+method conventions. Projects can opt into reliable, execution-free navigation
+with namespaced binding metadata:
+
+```janet
+(def Shape {})
+(def Circle {:janet-lsp/type-definition "Shape"} {})
+(defn draw-circle {:janet-lsp/implements "Shape"} [circle]
+  circle)
+(defn draw-many {:janet-lsp/implements ["Shape" "Drawable"]} [values]
+  values)
+```
+
+`textDocument/typeDefinition` on `Circle` resolves `Shape`.
+`textDocument/implementation` on `Shape` returns `draw-circle` and `draw-many`.
+Target strings name Janet symbols resolved in the declaration's indexed module
+and import context, including aliases and re-exports. Missing, malformed, imported
+private, or ambiguous targets produce no result. This metadata is source-only;
+dynamic prototype changes, factory return values, C abstract types, generated
+bindings, and convention-based dispatch are intentionally unsupported.
 
 ### Static Diagnostics
 

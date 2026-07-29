@@ -2,7 +2,7 @@
 (import ./uri)
 (import spork/path)
 
-(def format-version 3)
+(def format-version 4)
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
@@ -60,6 +60,13 @@
        (has-value? [true false] (definition :private))
        (range? (definition :range))
        (range? (definition :selection-range))
+       (or (nil? (definition :type-target))
+           (and (dictionary? (definition :type-target))
+                (string? (get-in definition [:type-target :name]))
+                (range? (get-in definition [:type-target :range]))))
+       (indexed? (definition :implementation-targets))
+       (all |(and (dictionary? $) (string? ($ :name)) (range? ($ :range)))
+            (definition :implementation-targets))
        (indexed? (definition :children))
        (all |(and (dictionary? $)
                   (string? ($ :name))

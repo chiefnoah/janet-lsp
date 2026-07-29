@@ -74,6 +74,9 @@
     :defn (get-in (first (filter |(= :fn ($ :tag)) (form :value))) [:value 0])
     (get-in form [:value 1])))
 
+(defn- parsed-parameter-index [parsed]
+  (find-index |(and (tuple? $) (= :brackets (tuple/type $))) parsed))
+
 (defn- private-definition? [form source form-head]
   (try
     (let [parsed (parse (string/slice source (form :index)
@@ -81,11 +84,42 @@
           metadata
           (if (get function-heads form-head)
             (let [parameters
-                  (find-index |(and (tuple? $) (= :brackets (tuple/type $))) parsed)]
+                   (parsed-parameter-index parsed)]
               (if parameters (tuple/slice parsed 2 parameters) @[]))
-            (tuple/slice parsed 2 -1))]
+            (tuple/slice parsed 2 (dec (length parsed))))]
       (has-value? metadata :private))
     ([_] false)))
+
+(defn- parsed-definition-metadata [form source form-head]
+  (try
+    (let [parsed (parse (string/slice source (form :index)
+                                      (+ (form :index) (form :len))))]
+      (if (get function-heads form-head)
+        (if-let [parameters (parsed-parameter-index parsed)]
+          (tuple/slice parsed 2 parameters)
+          @[])
+        (tuple/slice parsed 2 (dec (length parsed)))))
+    ([_] @[])))
+
+(defn- definition-metadata [form source form-head target-range]
+  (def parsed-metadata (parsed-definition-metadata form source form-head))
+  (def type-name
+    (some |(and (dictionary? $) (get $ :janet-lsp/type-definition))
+          parsed-metadata))
+  (def implementation-value
+    (some |(and (dictionary? $) (get $ :janet-lsp/implements))
+          parsed-metadata))
+  (def implementation-names
+    (cond
+      (string? implementation-value) [implementation-value]
+      (and (indexed? implementation-value) (all string? implementation-value))
+      (array ;implementation-value)
+      @[]))
+  {:type-target (when (and (string? type-name) (not (empty? type-name)))
+                  {:name type-name :range target-range})
+   :implementation-targets
+   (map |{:name $ :range target-range}
+        (filter |(not (empty? $)) implementation-names))})
 
 (defn- definition [form document-uri source top-level container]
   (def form-head (head form source))
@@ -93,6 +127,7 @@
              name-node (definition-name-node form)
              name (and (leaf? name-node) (name-node :value))]
     (def selection-range (node-range name-node source))
+    (def metadata (definition-metadata form source form-head selection-range))
     (def children
       (if (get function-heads form-head)
         (if-let [parameters (parameter-node form)]
@@ -111,6 +146,8 @@
      :kind kind
      :form form-head
      :private (private-definition? form source form-head)
+     :type-target (metadata :type-target)
+     :implementation-targets (metadata :implementation-targets)
      :top-level top-level
      :container container
      :range (node-range form source)
@@ -411,6 +448,17 @@
                   (string/has-suffix? (string "/" module "/init.janet") candidate-path))))
           (keys (workspace :index))))))
 
+(defn- module-uris [workspace document-uri module]
+  (if (string/has-prefix? "." module)
+    (filter |(get (workspace :index) $) (module-candidates document-uri module))
+    (filter
+      (fn [candidate]
+        (when-let [candidate-path (uri/file-uri->path candidate)]
+          (or (string/has-suffix? (string "/" module ".janet") candidate-path)
+              (string/has-suffix? (string "/" module "/init.janet")
+                                  candidate-path))))
+      (keys (workspace :index)))))
+
 (defn- definition-in [workspace document-uri name]
   (first (filter |(and ($ :top-level) (= name ($ :name)))
                  (get-in workspace [:index document-uri :definitions] @[]))))
@@ -436,7 +484,39 @@
                     (when-let [target-uri
                                (module-uri workspace document-uri (imported :module))]
                       (exported-definition workspace target-uri target-name visited)))))
-              (get-in workspace [:index document-uri :imports] @[])))))
+               (get-in workspace [:index document-uri :imports] @[])))))
+
+(varfn exported-definition-identities [])
+
+(varfn exported-definition-identities [workspace document-uri name visited]
+  (def key (string document-uri "#" name))
+  (if (get visited key)
+    @[]
+    (do
+      (put visited key true)
+      (def identities
+        (array
+          ;(catseq [definition :in
+                    (get-in workspace [:index document-uri :definitions] @[])
+                    :when (and (definition :top-level)
+                               (= name (definition :name))
+                               (not (definition :private))
+                               (not (string/has-suffix? "-" (definition :form))))]
+             (definition :identity))))
+      (each imported (get-in workspace [:index document-uri :imports] @[])
+        (when (and (imported :export) (imported :top-level)
+                   (string/has-prefix? (imported :prefix) name))
+          (def target-name (string/slice name (length (imported :prefix))))
+          (when (or (empty? (imported :only))
+                    (has-value? (imported :only) target-name))
+            (each target-uri
+                  (module-uris workspace document-uri (imported :module))
+              (each identity
+                    (exported-definition-identities workspace target-uri target-name
+                                                    visited)
+                (array/push identities identity))))))
+      (put visited key nil)
+      (distinct identities))))
 
 (varfn exported-definitions [])
 
@@ -630,6 +710,8 @@
              :form "generated"
              :generated true
              :private (not (not (binding :private)))
+             :type-target nil
+             :implementation-targets @[]
              :top-level true
              :range {:start location :end location}
              :selection-range {:start location :end location}
@@ -662,6 +744,74 @@
            reference :in (record :references)
            :when (= identity (reference :identity))]
     reference))
+
+(defn definition-by-identity [workspace identity]
+  (first
+    (catseq [record :in (values (workspace :index))
+             definition :in (record :definitions)
+             :when (= identity (definition :identity))]
+      definition)))
+
+(defn- metadata-target-identity [workspace definition target]
+  (when target
+    (when-let [record (get-in workspace [:index (definition :uri)])]
+      (def same-file-identities
+        (distinct
+          (catseq [candidate :in (record :definitions)
+                   :when (and (candidate :top-level)
+                              (= (target :name) (candidate :name)))]
+            (candidate :identity))))
+      (def imported-identities
+        (distinct
+          (catseq [imported :in (record :imports)
+                   :when (and (visible-import? imported (get-in target [:range :start]))
+                              (has-value? ["import" "import*" "use"]
+                                          (imported :kind))
+                              (string/has-prefix? (imported :prefix) (target :name)))
+                   :let [target-name
+                         (string/slice (target :name) (length (imported :prefix)))]
+                   :when (and (not (empty? target-name))
+                              (or (empty? (imported :only))
+                                  (has-value? (imported :only) target-name)))
+                   target-uri :in
+                   (module-uris workspace (definition :uri) (imported :module))
+                   identity :in
+                   (exported-definition-identities workspace target-uri target-name @{})]
+            identity)))
+      (def ambiguous-module?
+        (any?
+          (map |(and (visible-import? $ (get-in target [:range :start]))
+                     (has-value? ["import" "import*" "use"] ($ :kind))
+                     (string/has-prefix? ($ :prefix) (target :name))
+                     (not= 1 (length (module-uris workspace (definition :uri)
+                                                 ($ :module)))))
+               (record :imports))))
+      (cond
+        ambiguous-module? nil
+        (= 1 (length same-file-identities)) (same-file-identities 0)
+        (> (length same-file-identities) 1) nil
+        (= 1 (length imported-identities)) (imported-identities 0)
+        nil))))
+
+(defn type-definition [workspace identity]
+  (when-let [definition (definition-by-identity workspace identity)
+             target-identity
+             (metadata-target-identity workspace definition
+                                       (definition :type-target))]
+    (definition-by-identity workspace target-identity)))
+
+(defn implementations [workspace identity]
+  (sort-by |[($ :uri)
+             (get-in $ [:selection-range :start :line])
+             (get-in $ [:selection-range :start :character])]
+           (distinct
+             (catseq [record :in (values (workspace :index))
+                      definition :in (record :definitions)
+                      target :in (get definition :implementation-targets @[])
+                      :let [target-identity
+                            (metadata-target-identity workspace definition target)]
+                      :when (= identity target-identity)]
+               definition))))
 
 (defn callables [workspace]
   (catseq [record :in (values (workspace :index))

@@ -18,7 +18,7 @@
 
 (def standard-keywords
   [":private" ":deprecated" ":as" ":prefix" ":export" ":exit"
-   ":fresh" ":only"])
+   ":fresh" ":only" ":janet-lsp/type-definition" ":janet-lsp/implements"])
 
 (def snippets
   [{:label "def" :detail "Define an immutable binding"

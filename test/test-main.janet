@@ -531,6 +531,63 @@
                (index/outgoing-calls named-workspace (callable :identity)))
           @["inner"])))
 
+(deftest "resolve explicit type and implementation metadata"
+  (def document-uri "file:///navigation-metadata.janet")
+  (def record
+    (index/analyze
+      document-uri
+      (string "(def Shape {})\n"
+              "(def Circle {:janet-lsp/type-definition \"Shape\"} 1)\n"
+              "(defn draw-circle {:janet-lsp/implements \"Shape\"} [circle] circle)\n"
+              "(defn draw-square {:janet-lsp/implements [\"Shape\" \"Drawable\"]} [square] square)\n"
+              "(def inferred {})\n"
+              "(def malformed {:janet-lsp/type-definition 42} nil)\n")))
+  (def workspace @{:index @{document-uri record}})
+  (index/relink workspace)
+  (def by-name
+    (fn [name] (first (filter |(= name ($ :name)) (record :definitions)))))
+  (test (get-in (by-name "Circle") [:type-target :name]) "Shape")
+  (test (map |($ :name) (get-in (by-name "draw-square")
+                                [:implementation-targets]))
+        @["Shape" "Drawable"])
+  (test (get-in (index/type-definition workspace ((by-name "Circle") :identity))
+                [:name])
+        "Shape")
+  (test (index/type-definition workspace ((by-name "inferred") :identity)) nil)
+  (test (index/type-definition workspace ((by-name "malformed") :identity)) nil)
+  (test (map |($ :name) (index/implementations workspace ((by-name "Shape") :identity)))
+        @["draw-circle" "draw-square"])
+
+  (def duplicate-record
+    (index/analyze "file:///ambiguous-metadata.janet"
+                   (string "(def Same {})\n"
+                           "(def Same {})\n"
+                           "(def value {:janet-lsp/type-definition \"Same\"} {})\n")))
+  (def duplicate-workspace
+    @{:index @{(duplicate-record :uri) duplicate-record}})
+  (index/relink duplicate-workspace)
+  (def value (first (filter |(= "value" ($ :name))
+                            (duplicate-record :definitions))))
+  (test (index/type-definition duplicate-workspace (value :identity)) nil)
+
+  (def imported-type-uri "file:///types.janet")
+  (def imported-main-uri "file:///main.janet")
+  (def imported-type-record
+    (index/analyze imported-type-uri "(def Kind {})\n(def Kind {})\n"))
+  (def imported-main-record
+    (index/analyze
+      imported-main-uri
+      (string "(import ./types :as types)\n"
+              "(def value {:janet-lsp/type-definition \"types/Kind\"} {})\n")))
+  (def imported-workspace
+    @{:index @{imported-type-uri imported-type-record
+               imported-main-uri imported-main-record}})
+  (index/relink imported-workspace)
+  (def imported-value
+    (first (filter |(= "value" ($ :name))
+                   (imported-main-record :definitions))))
+  (test (index/type-definition imported-workspace (imported-value :identity)) nil))
+
 (deftest "validate safe positional and named calls"
   (def source
     (string "(defn exact [a] nil)\n"

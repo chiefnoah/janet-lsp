@@ -18,6 +18,8 @@ Format for entires is <version-string> - release date.
   progressive selection ranges, and execution-free module/source links.
 - Added indexed call hierarchy with incoming and outgoing calls for local,
   imported, recursive, and macro callables.
+- Added type-definition and implementation navigation through explicit,
+  import-aware `:janet-lsp/type-definition` and `:janet-lsp/implements` metadata.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,
