@@ -230,7 +230,8 @@
      :range range
      :location [(inc (position :line)) (inc (position :character))]
      :severity 1
-     :code "janet.lint.undefined-symbol"}))
+     :code "janet.lint.undefined-symbol"
+     :data {:name name}}))
 
 (defn- duplicate-diagnostics [record]
   (def seen @{})
@@ -247,6 +248,75 @@
                        :severity 2
                        :code "janet.lint.duplicate-definition"}))
         (put seen name true))))
+  results)
+
+(defn- unused-binding-diagnostics [tree source record env]
+  (def results @[])
+  (defn uncertain? [node]
+    (when (dictionary? node)
+      (def children (and (indexed? (node :value)) (node :value)))
+      (or (and (= :ptuple (node :tag))
+               (leaf? (get children 0))
+               (opaque-call? (get-in children [0 :value]) record env
+                             (get-in (node-range (get children 0) source) [:start])))
+          (and children (any? (map uncertain? children))))))
+  (defn visit [node]
+    (when (dictionary? node)
+      (when (and (= :let (node :tag)) (not (uncertain? node)))
+        (when-let [parameters
+                   (first (filter |(= :parameters (get $ :tag)) (node :value)))]
+          (each binding (parameters :value)
+            (def name (binding :value))
+            (when (and (leaf? binding)
+                       (not (string/has-prefix? "_" name))
+                       (not (string/has-prefix? "&" name))
+                       (not (string/has-prefix? ":" name)))
+              (def range (node-range binding source))
+              (def identity
+                (string (record :uri) "#local:"
+                        (get-in range [:start :line]) ":"
+                        (get-in range [:start :character])))
+              (when (<= (length (filter |(= identity ($ :identity))
+                                        (record :references)))
+                        1)
+                (array/push results
+                            {:message (string "unused binding " name)
+                             :range range :severity 2
+                             :code "janet.lint.unused-binding"
+                             :data {:name name}}))))))
+      (when (indexed? (node :value))
+        (each child (node :value) (visit child)))))
+  (visit tree)
+  results)
+
+(defn- unused-import-diagnostics [record workspace]
+  (def results @[])
+  (each imported (record :imports)
+    # Multi-module `use` forms need per-module rewriting, so remain untouched.
+    (when (and (imported :top-level) (= "import" (imported :kind))
+               (not (imported :export)) (not (empty? (imported :prefix)))
+               (not (string/has-prefix? "_" (imported :alias))))
+      (when-let [target-uri
+                 (index/module-uri workspace (record :uri) (imported :module))]
+        (def exported
+          (filter |(and (or (empty? (imported :only))
+                            (has-value? (imported :only) ($ :name)))
+                        (not ($ :private)))
+                  (index/exported-definitions workspace target-uri)))
+        (def used
+          (any?
+            (map |(and (not (in-range? (get-in $ [:range :start])
+                                       (imported :range)))
+                       (string/has-prefix? (imported :prefix) ($ :name)))
+                 (record :references))))
+        (when (and (not (empty? exported)) (not used))
+          (array/push results
+                      {:message (string "unused import " (imported :module))
+                       :range (imported :range) :severity 2
+                       :code "janet.lint.unused-import"
+                       :data {:module (imported :module)
+                              :alias (imported :alias)
+                              :prefix (imported :prefix)}})))))
   results)
 
 (defn- literal-condition [value]
@@ -327,8 +397,10 @@
       (array ;(if include-undefined
                 (undefined-diagnostics source record workspace env declarations ignored)
                 @[])
-             ;(duplicate-diagnostics record)
-             ;shadowing
+              ;(duplicate-diagnostics record)
+              ;(unused-binding-diagnostics tree source record env)
+              ;(unused-import-diagnostics record workspace)
+              ;shadowing
              ;(control-flow-diagnostics (parse-forms source) record env)))
     ([err]
       (logging/warn (string "Static diagnostics failed: " err) [:diagnostics])

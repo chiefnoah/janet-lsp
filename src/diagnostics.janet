@@ -29,8 +29,7 @@
         lint-results (if (> (length content) eval/max-source-bytes)
                        @[]
                        (lint/analyze content env))
-        call-results (if (or (workspace :trusted)
-                             (> (length content) eval/max-source-bytes))
+        call-results (if (> (length content) eval/max-source-bytes)
                        @[]
                        (signatures/diagnostics content))
         static-results (if (> (length content) eval/max-source-bytes)
@@ -72,7 +71,8 @@
                        :severity severity
                        :source "janet-lsp"
                        :code (or diagnostic-code (code message))
-                       :data {:contentHash (index/content-hash content)
-                              :version version}}))))
+                       :data (merge (or (get result :data) {})
+                                    {:contentHash (index/content-hash content)
+                                     :version version})}))))
     (logging/dbg (string/format "diagnostics: %m" items) [:evaluation])
     [items env]))

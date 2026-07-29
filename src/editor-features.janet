@@ -1,7 +1,6 @@
 (import ./doc)
 (import ./analysis)
 (import ./completion)
-(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./position)
@@ -130,48 +129,6 @@
       (set previous-line (start :line))
       (set previous-character (start :character))))
   [:ok state {:data data}])
-
-(defn- missing-delimiters [source]
-  (def stack @[])
-  (each byte (string/bytes (lookup/structure-mask source))
-    (case byte
-      40 (array/push stack 41)
-      91 (array/push stack 93)
-      123 (array/push stack 125)
-      41 (if (and (not (empty? stack)) (= 41 (last stack)))
-           (array/pop stack) (array/push stack nil))
-      93 (if (and (not (empty? stack)) (= 93 (last stack)))
-           (array/pop stack) (array/push stack nil))
-      125 (if (and (not (empty? stack)) (= 125 (last stack)))
-            (array/pop stack) (array/push stack nil))))
-  (when (not (has-value? stack nil))
-    (string/from-bytes ;(reverse stack))))
-
-(defn on-code-action [state params]
-  (def document (server-utils/document state params))
-  (def only (get-in params ["context" "only"] @[]))
-  (def actions @[])
-  (when (or (empty? only) (has-value? only "quickfix"))
-    (each diagnostic (get-in params ["context" "diagnostics"] @[])
-      (when (and (= "janet.parse.unclosed-delimiter" (get diagnostic "code"))
-                 (= (index/content-hash (document :content))
-                    (get-in diagnostic ["data" "contentHash"]))
-                 (= (document :version) (get-in diagnostic ["data" "version"])))
-        (when-let [closing (missing-delimiters (document :content))]
-          (when (not (empty? closing))
-            (def end (position/document-end (document :content)
-                                            (state :position-encoding)))
-            (array/push actions
-                        {:title (string "Insert missing " closing)
-                         :kind "quickfix"
-                         :diagnostics [diagnostic]
-                         :isPreferred true
-                         :edit {:documentChanges
-                                [(server-utils/versioned-edit
-                                   state (document :uri)
-                                   [{:range {:start end :end end}
-                                     :newText closing}])]}}))))))
-  [:ok state actions])
 
 (defn on-inlay-hint [state params]
   (if (not (state :inlay-parameter-hints))

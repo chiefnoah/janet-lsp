@@ -120,7 +120,8 @@
       {:legend {:tokenTypes server-meta/semantic-token-types
                 :tokenModifiers server-meta/semantic-token-modifiers}
        :full true}
-      :codeActionProvider {:codeActionKinds ["quickfix"]}
+       :codeActionProvider
+       {:codeActionKinds ["quickfix" "source.sortImports" "source.organizeImports"]}
       :inlayHintProvider (state :inlay-parameter-hints)
       :workspace {:workspaceFolders {:supported true :changeNotifications true}}}
      :serverInfo (server-meta/server-info)})

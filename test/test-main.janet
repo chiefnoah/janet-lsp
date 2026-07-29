@@ -382,7 +382,7 @@
   (test (map |($ :message)
              (static-diagnostics/analyze earlier-source earlier-tree earlier-record
                                          @{:index @{}} root-env))
-        @["binding x shadows an existing binding"])
+        @["unused binding x" "binding x shadows an existing binding"])
   (def destructured-source "(let [[a b] [1 2] c (fn [a] a)] c)\n")
   (def destructured-tree (parser/syntax-tree destructured-source))
   (def destructured-record
@@ -392,7 +392,8 @@
              (static-diagnostics/analyze
                destructured-source destructured-tree destructured-record
                @{:index @{}} root-env))
-        @["binding a shadows an existing binding"])
+        @["unused binding a" "unused binding b"
+          "binding a shadows an existing binding"])
   (def loop-source "(defn run [xs] (loop [x :in xs] x))\n")
   (def loop-tree (parser/syntax-tree loop-source))
   (def loop-record (index/analyze "file:///loop.janet" loop-source loop-tree))
@@ -604,6 +605,15 @@
           "janet.call.unknown-named-argument"
           "janet.call.duplicate-named-argument"
           "janet.call.odd-named-arguments"])
+  (def missing
+    (first (filter |(= "janet.call.missing-arguments" ($ :code))
+                   (signatures/diagnostics source))))
+  (test (missing :data) @{:callee "exact" :missing 1 :provided 0})
+  (def unknown
+    (first (filter |(= "janet.call.unknown-named-argument" ($ :code))
+                   (signatures/diagnostics source))))
+  (test (unknown :data)
+        @{:callee "run" :label ":unknown" :positional 2 :named-index 0})
   (def signature (signatures/find source "run"))
   (test (signature :label) "(run required &opt optional &named option)")
   (test (map |($ :label) (signature :parameters))

@@ -224,6 +224,8 @@ severity number from 1 through 4:
     "unreachableCode": "warning",
     "constantCondition": "information",
     "unusedParameter": "off",
+    "unusedBinding": "warning",
+    "unusedImport": "hint",
     "calls": "warning"
   }
 }
@@ -241,6 +243,25 @@ generated-name
 # janet-lsp: enable shadowing
 # janet-lsp: enable all
 ```
+
+### Code Actions
+
+Fresh static diagnostics provide versioned quick fixes when the edit can be
+recomputed from current source evidence. These fixes insert `nil` placeholders
+for missing required arguments, remove complete unsupported named pairs, prefix
+simple unused parameters and `let` bindings with `_`, mark an unused import
+alias with `_` without suppressing module initialization, and add an exact
+selective import when one workspace definition is the unique candidate.
+Potentially effectful argument removal is not marked preferred.
+
+`source.sortImports` and `source.organizeImports` sort the raw text of safe,
+comment-free runs of ordinary top-level imports whose modules contain only
+statically side-effect-free declarations. They preserve aliases,
+prefixes, selective member lists, quoting, UTF text, and the document newline
+style. Exported imports, `use`, `import*`, `require`, `dofile`, attached
+comments, malformed forms, and colliding prefixes are left untouched. Organize
+imports intentionally does not remove imports implicitly; unused-import removal
+remains an explicit quick fix because loading a module may have side effects.
 
 ## Getting Started (for Development)
 

@@ -86,7 +86,8 @@
           {:message (string "unused parameter " name)
            :location [line column]
            :severity 2
-           :code "janet.lint.unused-parameter"})))))
+           :code "janet.lint.unused-parameter"
+           :data {:name (string name)}})))))
 
 (defn analyze [source &opt env]
   (try

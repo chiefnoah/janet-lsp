@@ -5,6 +5,7 @@
 (import ./documents)
 (import ./document-features)
 (import ./call-hierarchy)
+(import ./code-actions)
 (import ./editor-features)
 (import ./lifecycle)
 (import ./logging)
@@ -126,7 +127,7 @@
         "textDocument/signatureHelp" (editor-features/on-signature-help state params)
         "textDocument/semanticTokens/full"
         (editor-features/on-semantic-tokens-full state params)
-        "textDocument/codeAction" (editor-features/on-code-action state params)
+        "textDocument/codeAction" (code-actions/on-code-action state params)
         "textDocument/inlayHint" (editor-features/on-inlay-hint state params)
 
         "textDocument/definition" (navigation/on-definition state params)

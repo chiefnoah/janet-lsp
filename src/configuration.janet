@@ -3,7 +3,9 @@
    "compile" true
    "runtime" true
    "analysis" true
-   "unusedParameter" true
+    "unusedParameter" true
+    "unusedBinding" true
+    "unusedImport" true
    "calls" true
    "undefinedSymbol" true
    "duplicateDefinition" true
@@ -21,6 +23,8 @@
     (string/has-prefix? "janet.runtime" code) "runtime"
     (string/has-prefix? "janet.call." code) "calls"
     (= code "janet.lint.unused-parameter") "unusedParameter"
+    (= code "janet.lint.unused-binding") "unusedBinding"
+    (= code "janet.lint.unused-import") "unusedImport"
     (= code "janet.lint.undefined-symbol") "undefinedSymbol"
     (= code "janet.lint.duplicate-definition") "duplicateDefinition"
     (= code "janet.lint.shadowing") "shadowing"

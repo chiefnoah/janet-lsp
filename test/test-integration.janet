@@ -49,6 +49,9 @@
                 [:result :capabilities :documentOnTypeFormattingProvider
                  :moreTriggerCharacter])
         @["]" "}"])
+  (test (get-in initialize [:result :capabilities :codeActionProvider
+                            :codeActionKinds])
+        @["quickfix" "source.sortImports" "source.organizeImports"])
   (test (get-in initialize
                 [:result :capabilities :documentLinkProvider :resolveProvider])
         false)
@@ -1689,6 +1692,188 @@
   (read-output cursor)
   (test (get-in (request cursor 120 "textDocument/codeAction" params) [:result]) @[]))
 
+(deftest "offer deterministic call and unused-binding fixes"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (def source
+    (string "(defn target [first second &named ok] (do ok (+ first second)))\n"
+            "(target 1)\n"
+            "(target 1 2 :bad 3)\n"
+            "(defn edge [first second &named ok] (do ok first second))\n"
+            "(edge :value)\n"
+            "(edge :bad 2 :bad 3)\n"
+            "(defn run [unused] nil)\n"
+            "(let [binding 1] nil)\n"))
+  (open-text-document cursor document-uri source)
+  (def diagnostics
+    (get-in
+      (request cursor 264 "textDocument/diagnostic"
+               {:textDocument {:uri document-uri}})
+      [:result :items]))
+  (defn diagnostic [code &opt callee]
+    (first (filter |(and (= code ($ :code))
+                         (or (nil? callee) (= callee (get-in $ [:data :callee]))))
+                   diagnostics)))
+  (defn action [id code &opt callee]
+    (get-in
+      (request cursor id "textDocument/codeAction"
+               {:textDocument {:uri document-uri}
+                :range ((diagnostic code callee) :range)
+                :context {:diagnostics [(diagnostic code callee)]
+                          :only ["quickfix"]}})
+      [:result 0]))
+
+  (def missing (action 265 "janet.call.missing-arguments"))
+  (test (get missing :title) "Insert 1 missing argument")
+  (test (get-in missing [:edit :documentChanges 0 :edits 0 :newText]) " nil")
+  (def unsupported (action 266 "janet.call.unknown-named-argument"))
+  (test (get unsupported :title) "Remove unsupported :bad argument")
+  (test (get-in unsupported [:edit :documentChanges 0 :edits 0 :newText]) "")
+  (def keyword-positional (action 278 "janet.call.missing-arguments" "edge"))
+  (test (get-in keyword-positional
+                [:edit :documentChanges 0 :edits 0 :range :start :character])
+        12)
+  (test (get-in keyword-positional [:edit :documentChanges 0 :edits 0 :newText])
+        " nil")
+  (def repeated-unknown
+    (action 279 "janet.call.unknown-named-argument" "edge"))
+  (test (get-in repeated-unknown
+                [:edit :documentChanges 0 :edits 0 :range :start :character])
+        13)
+  (def unused-parameter (action 267 "janet.lint.unused-parameter"))
+  (test (get unused-parameter :title) "Mark unused as intentionally unused")
+  (test (get-in unused-parameter [:edit :documentChanges 0 :edits 0 :newText]) "_")
+  (def unused-binding (action 268 "janet.lint.unused-binding"))
+  (test (get unused-binding :title) "Mark binding as intentionally unused")
+  (test (get-in unused-binding [:edit :documentChanges 0 :edits 0 :newText]) "_")
+  (test (get-in unused-binding [:edit :documentChanges 0 :textDocument :version]) 1)
+  (exit-lsp cursor))
+
+(deftest "fix missing and unused imports and sort safe import blocks"
+  (def root (temp-directory "janet-lsp-code-action-imports"))
+  (def a-path (path/join root "a.janet"))
+  (def b-path (path/join root "b.janet"))
+  (def c-path (path/join root "c.janet"))
+  (def main-path (path/join root "main.janet"))
+  (spit a-path "(def alpha 1)\n")
+  (spit b-path "(def beta 2)\n")
+  (spit c-path "(def missing-value 3)\n")
+  (def source
+    (string "(import ./b)\n"
+            "(import ./a :as a)\n"
+            "missing-value\n"))
+  (spit main-path source)
+  (def root-uri (uri/path->file-uri root))
+  (def main-uri (uri/path->file-uri main-path))
+  (index-cache/write (index-cache/path-for root-uri) root-uri
+                     index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 269 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document cursor main-uri source)
+  (def diagnostics
+    (get-in
+      (request cursor 270 "textDocument/diagnostic"
+               {:textDocument {:uri main-uri}})
+      [:result :items]))
+  (def undefined
+    (first (filter |(= "janet.lint.undefined-symbol" ($ :code)) diagnostics)))
+  (def missing-action
+    (get-in
+      (request cursor 271 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range (undefined :range)
+                :context {:diagnostics [undefined] :only ["quickfix"]}})
+      [:result 0]))
+  (test (get missing-action :title) "Import missing-value")
+  (test (string/find "(import ./c :only [missing-value] :prefix \"\")"
+                     (get-in missing-action
+                             [:edit :documentChanges 0 :edits 0 :newText]))
+        1)
+
+  (def unused
+    (first (filter |(= "janet.lint.unused-import" ($ :code)) diagnostics)))
+  (def remove-action
+    (get-in
+      (request cursor 272 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range (unused :range)
+                :context {:diagnostics [unused] :only ["quickfix"]}})
+      [:result 0]))
+  (test (get remove-action :title) "Mark import as intentionally unused")
+  (test (get remove-action :isPreferred) true)
+  (test (get-in remove-action [:edit :documentChanges 0 :edits 0 :newText])
+        " :as _b")
+
+  (def sort-action
+    (get-in
+      (request cursor 273 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range {:start {:line 0 :character 0}
+                        :end {:line 2 :character 0}}
+                :context {:diagnostics @[] :only ["source.sortImports"]}})
+      [:result 0]))
+  (test (get sort-action :kind) "source.sortImports")
+  (test (get-in sort-action [:edit :documentChanges 0 :edits 0 :newText])
+        "(import ./a :as a)\n(import ./b)")
+  (def organize-action
+    (get-in
+      (request cursor 274 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range {:start {:line 0 :character 0}
+                        :end {:line 2 :character 0}}
+                :context {:diagnostics @[] :only ["source.organizeImports"]}})
+      [:result 0]))
+  (test (get organize-action :kind) "source.organizeImports")
+  (test (= (get-in organize-action [:edit :documentChanges 0 :edits 0 :newText])
+           (get-in sort-action [:edit :documentChanges 0 :edits 0 :newText]))
+        true)
+  (def source-actions
+    (get-in
+      (request cursor 280 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range {:start {:line 0 :character 0}
+                        :end {:line 2 :character 0}}
+                :context {:diagnostics @[] :only ["source"]}})
+      [:result]))
+  (test (map |($ :kind) source-actions)
+        @["source.sortImports" "source.organizeImports"])
+
+  (change-text-document cursor main-uri
+                        "# attached\n(import ./b :as b)\n(import ./a :as a)\n" 2)
+  (test (get-in
+          (request cursor 275 "textDocument/codeAction"
+                   {:textDocument {:uri main-uri}
+                    :range {:start {:line 0 :character 0}
+                            :end {:line 2 :character 18}}
+                    :context {:diagnostics @[] :only ["source.organizeImports"]}})
+          [:result])
+        @[])
+
+  (change-text-document cursor main-uri
+                        "#!/usr/bin/env janet\r\nmissing-value\r\n" 3)
+  (def crlf-diagnostics
+    (get-in
+      (request cursor 276 "textDocument/diagnostic"
+               {:textDocument {:uri main-uri}})
+      [:result :items]))
+  (def crlf-undefined
+    (first (filter |(= "janet.lint.undefined-symbol" ($ :code)) crlf-diagnostics)))
+  (def crlf-action
+    (get-in
+      (request cursor 277 "textDocument/codeAction"
+               {:textDocument {:uri main-uri}
+                :range (crlf-undefined :range)
+                :context {:diagnostics [crlf-undefined] :only ["quickfix"]}})
+      [:result 0]))
+  (test (get-in crlf-action
+                [:edit :documentChanges 0 :edits 0 :range :start :line])
+        1)
+  (test (get-in crlf-action [:edit :documentChanges 0 :edits 0 :newText])
+        "(import ./c :only [missing-value] :prefix \"\")\r\n")
+  (exit-lsp cursor)
+  (remove-tree root))
+
 (deftest "pull diagnostics survive compile and bounded runtime failures"
   (def cursor (start-trusted-lsp {:textDocument {:diagnostic {}}}))
   (notify cursor "textDocument/didOpen"
@@ -1998,9 +2183,9 @@
   (def shebang-items (complete 198 "#!/usr/bin/env janet\nexpo" 1 4))
   (def shebang-item
     (first (filter |(= "exported" ($ :label)) shebang-items)))
-  (test (get-in shebang-item [:additionalTextEdits 0 :range :start :line]) 0)
+  (test (get-in shebang-item [:additionalTextEdits 0 :range :start :line]) 1)
   (test (get-in shebang-item [:additionalTextEdits 0 :newText])
-        "\n(import ./module :only [exported] :prefix \"\")\n")
+        "(import ./module :only [exported] :prefix \"\")\n")
   (def spaced-auto-items (complete 213 "#\nspaced" 1 6))
   (def spaced-auto
     (first (filter |(= "spaced-export" ($ :label)) spaced-auto-items)))

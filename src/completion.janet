@@ -379,7 +379,9 @@
                                   (filter |($ :top-level) (record :imports))))]
     (get-in imported [:range :end])
     (if (string/has-prefix? "#!" content)
-      {:line 0 :character (length (first (string/split "\n" content)))}
+      (if (string/find "\n" content)
+        {:line 1 :character 0}
+        {:line 0 :character (length content)})
       {:line 0 :character 0})))
 
 (defn- import-edit [state document module name]
@@ -388,12 +390,42 @@
   (def after-import?
     (any? (map |($ :top-level) (get-in document [:analysis :index :imports] @[]))))
   (def after-shebang? (and (not after-import?)
-                           (string/has-prefix? "#!" (document :content))))
+                            (string/has-prefix? "#!" (document :content))))
+  (def shebang-line-complete?
+    (and after-shebang? (string/find "\n" (document :content))))
+  (def newline (if (string/find "\r\n" (document :content)) "\r\n" "\n"))
   {:range (server-utils/lsp-range state (document :content)
-                                  {:start position :end position})
-   :newText (string (if (or after-import? after-shebang?) "\n" "")
-                    "(import " (module-expression module) " :only [" name
-                    "] :prefix \"\")\n")})
+                                   {:start position :end position})
+    :newText (string (if (or after-import?
+                             (and after-shebang? (not shebang-line-complete?)))
+                       newline "")
+                     "(import " (module-expression module) " :only [" name
+                     "] :prefix \"\")" newline)})
+
+(defn missing-import-edit [state document name]
+  (def workspace (server-utils/document-workspace state document))
+  (def candidates
+    (catseq [definition :in (index/definitions workspace name)
+             :when (and (public-definition? definition)
+                        (not= (document :uri) (definition :uri)))
+             :let [module
+                   (source-module-path (document :path)
+                                       (uri/file-uri->path (definition :uri)) false)]
+             :when module]
+      {:definition definition :module module}))
+  (def last-import
+    (last (sort-by |(get-in $ [:range :end :line])
+                   (filter |($ :top-level)
+                           (get-in document [:analysis :index :imports] @[])))))
+  (def safe-insertion
+    (or (nil? last-import)
+        (let [line (get-in last-import [:range :end :line])
+              character (get-in last-import [:range :end :character])
+              text (get (string/split "\n" (document :content)) line)]
+          (empty? (string/trim (string/slice text character))))))
+  (when (and (workspace :uri) (workspace :cache-current) (nil? (workspace :scan))
+             safe-insertion (= 1 (length candidates)))
+    (import-edit state document (get-in candidates [0 :module]) name)))
 
 (defn- auto-import-items [state workspace document token prefix visible usage]
   (if (empty? prefix)
@@ -518,10 +550,10 @@
               (if (state :completion-snippets)
                 (snippet-items content token prefix call bare-call?) @[])
               ranked-globals
-              (if (> (token :start)
-                     (lookup/to-index
-                       (import-position (get-in document [:analysis :index]) content)
-                       content))
+              (if (>= (token :start)
+                      (lookup/to-index
+                        (import-position (get-in document [:analysis :index]) content)
+                        content))
                 (auto-import-items state workspace document token prefix visible usage)
                 @[]))))
         matching
