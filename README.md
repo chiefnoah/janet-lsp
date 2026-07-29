@@ -16,6 +16,8 @@ The goal of this project is to provide an augmented editor/tooling experience fo
 - Local, imported, indexed, and runtime source-map definition lookup
 - Parser-backed multiline symbols, module aliases, selective imports, and re-exports
 - Document/workspace symbols, binding-aware references, and workspace rename
+- Binding-aware document highlights, structural folding and selection ranges,
+  and links for indexed modules and explicit source paths
 - Full-document semantic tokens and deterministic diagnostic quick fixes
 - Conservative parameter-name inlay hints
 - Single-root, multi-root, and standalone-file analysis

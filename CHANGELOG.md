@@ -14,6 +14,8 @@ Format for entires is <version-string> - release date.
   `trustedWorkspaces` initialization options.
 - Added indexed definitions, symbols, references, workspace rename, semantic
   tokens, deterministic quick fixes, and conservative inlay hints.
+- Added binding-aware document highlights, nested syntax and comment folding,
+  progressive selection ranges, and execution-free module/source links.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

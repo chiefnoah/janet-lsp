@@ -18,6 +18,9 @@
     :diagnostic-generation 0
     :diagnostic-refresh-support false
     :completion-snippets false
+    :folding-line-only false
+    :folding-range-limit nil
+    :document-link-tooltips false
     :workspaces @{}
     :standalone-workspace @{:uri nil
                             :path nil
@@ -46,6 +49,17 @@
        (not (not (get-in params
                          ["capabilities" "textDocument" "completion"
                           "completionItem" "snippetSupport"]))))
+  (put state :folding-line-only
+       (not (not (get-in params
+                         ["capabilities" "textDocument" "foldingRange"
+                          "lineFoldingOnly"]))))
+  (put state :folding-range-limit
+       (get-in params ["capabilities" "textDocument" "foldingRange"
+                       "rangeLimit"]))
+  (put state :document-link-tooltips
+       (not (not (get-in params
+                         ["capabilities" "textDocument" "documentLink"
+                          "tooltipSupport"]))))
   (put state :inlay-parameter-hints
        (not= false
              (get-in params
@@ -91,6 +105,10 @@
       :documentSymbolProvider true
       :workspaceSymbolProvider true
       :referencesProvider true
+      :documentHighlightProvider true
+      :foldingRangeProvider true
+      :selectionRangeProvider true
+      :documentLinkProvider {:resolveProvider false}
       :renameProvider {:prepareProvider true}
       :semanticTokensProvider
       {:legend {:tokenTypes server-meta/semantic-token-types

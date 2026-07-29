@@ -299,20 +299,44 @@
   "Return reusable binding labels visible at a source location."
   (map |(string ($ :label)) (get-syms-at-loc loc source)))
 
+(defn binding-at [loc source &opt tree]
+  "Return the exact range when loc is on a parser-recognized binding leaf."
+  (def word (lookup/word-at loc source))
+  (def target
+    (lookup/to-index {:line (loc :line) :character (first (word :range))} source))
+  (var found nil)
+  (defn visit [node binding?]
+    (when (and (nil? found) (dictionary? node))
+      (def tagged? (has-value? [:parameters :variables :fn] (node :tag)))
+      (if (and (or binding? tagged?)
+               (string? (node :value))
+               (= target (node :index)))
+        (set found
+             {:start (lookup/from-index (node :index) source)
+              :end (lookup/from-index (+ (node :index) (node :len)) source)})
+        (when (indexed? (node :value))
+          (each child (node :value) (visit child (or binding? tagged?)))))))
+  (visit (or tree (syntax-tree source)) false)
+  found)
+
 (defn- binding-nodes [heads]
   (array/concat
     (catseq [head :in heads] (get-value-for-tag :parameters head))
     (catseq [head :in heads] (get-defined-for-tag :variables head))
     (catseq [head :in heads] (get-fn-names head))))
 
-(defn definition-at [loc source name]
+(defn- definition-at* [loc source name binding-only?]
   (try
     (when (has-value? (visible-bindings loc source) name)
       (def candidates
         (filter |(let [range ($ :range)]
-                   (or (< (get-in range [:end :line]) (loc :line))
-                       (and (= (get-in range [:end :line]) (loc :line))
-                            (< (get-in range [:end :character]) (loc :character)))))
+                   (and
+                     (or (< (get-in range [:end :line]) (loc :line))
+                         (and (= (get-in range [:end :line]) (loc :line))
+                              (< (get-in range [:end :character])
+                                 (loc :character))))
+                     (or (not binding-only?)
+                         (binding-at (get-in range [:start]) source))))
                 (references-for name source)))
       (def lexical-scope?
         (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-" "defmacro"] $)
@@ -320,6 +344,13 @@
       (when-let [candidate ((if lexical-scope? last first) candidates)]
         {:name name :range (candidate :range)}))
     ([_] nil)))
+
+(defn definition-at [loc source name]
+  (definition-at* loc source name false))
+
+(defn binding-definition-at [loc source name]
+  "Resolve name only through parser-recognized binding leaves."
+  (definition-at* loc source name true))
 
 (varfn references-for [name source]
   "Return byte-column ranges for code identifiers matching name."

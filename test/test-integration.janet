@@ -34,6 +34,12 @@
   (test (get-in initialize
                 [:result :capabilities :diagnosticProvider :workspaceDiagnostics])
         true)
+  (test (get-in initialize [:result :capabilities :documentHighlightProvider]) true)
+  (test (get-in initialize [:result :capabilities :foldingRangeProvider]) true)
+  (test (get-in initialize [:result :capabilities :selectionRangeProvider]) true)
+  (test (get-in initialize
+                [:result :capabilities :documentLinkProvider :resolveProvider])
+        false)
   (test (get-in (request cursor 1 "janet/serverInfo") [:result :serverInfo :name])
         "janet-lsp"))
 
@@ -831,6 +837,265 @@
               :position {:line 1 :character 2}
               :context {:includeDeclaration true}}))
   (test (length (get-in updated [:result])) 2)
+  (exit-lsp cursor))
+
+(deftest "highlight bindings and return structural ranges"
+  (def cursor
+    (start-lsp {:textDocument
+                {:diagnostic {}
+                 :foldingRange {:lineFoldingOnly true :rangeLimit 20}}}))
+  (def source
+    (string "# first 😀 comment\n"
+            "# second comment\n"
+            "(def value 1)\n"
+            "value\n"
+            "(let [value 2]\n"
+            "  (do \"😀\"\n"
+            "    value))\n"
+            "value\n"))
+  (open-text-document cursor document-uri source)
+
+  (def inner
+    (request cursor 216 "textDocument/documentHighlight"
+             {:textDocument {:uri document-uri}
+              :position {:line 6 :character 7}}))
+  (test (map |(get-in $ [:range :start :line]) (get-in inner [:result]))
+        @[4 6])
+  (test (map |($ :kind) (get-in inner [:result])) @[3 2])
+  (def inner-from-declaration
+    (request cursor 225 "textDocument/documentHighlight"
+             {:textDocument {:uri document-uri}
+              :position {:line 4 :character 8}}))
+  (test (map |(get-in $ [:range :start :line])
+             (get-in inner-from-declaration [:result]))
+        @[4 6])
+  (def outer
+    (request cursor 217 "textDocument/documentHighlight"
+             {:textDocument {:uri document-uri}
+              :position {:line 3 :character 2}}))
+  (test (map |(get-in $ [:range :start :line]) (get-in outer [:result]))
+        @[2 3 7])
+  (test (map |($ :kind) (get-in outer [:result])) @[3 2 2])
+  (test (get-in
+          (request cursor 218 "textDocument/documentHighlight"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 0 :character 4}})
+          [:result])
+        @[])
+
+  (def folding
+    (request cursor 219 "textDocument/foldingRange"
+             {:textDocument {:uri document-uri}}))
+  (test (map |[($ :startLine) ($ :endLine) (get $ :kind)]
+             (get-in folding [:result]))
+        @[[0 1 "comment"] [4 6 nil] [5 6 nil]])
+  (test (get-in folding [:result 0 :startCharacter]) nil)
+
+  (def selection
+    (request cursor 220 "textDocument/selectionRange"
+             {:textDocument {:uri document-uri}
+              :positions [{:line 6 :character 7}
+                          {:line 5 :character 7}]}))
+  (test (get-in selection [:result 0 :range :start])
+        @{:line 6 :character 4})
+  (test (get-in selection [:result 0 :range :end])
+        @{:line 6 :character 9})
+  (test (get-in selection [:result 0 :parent :range :start])
+        @{:line 5 :character 2})
+  # The astral character occupies two UTF-16 units.
+  (test (get-in selection [:result 1 :range :start])
+        @{:line 5 :character 6})
+  (test (get-in selection [:result 1 :range :end])
+        @{:line 5 :character 10})
+
+  (change-text-document cursor document-uri "(\n  [value\n" 2)
+  (def malformed-folding
+    (request cursor 221 "textDocument/foldingRange"
+             {:textDocument {:uri document-uri}}))
+  (test (map |[($ :startLine) ($ :endLine)] (get-in malformed-folding [:result]))
+        @[[0 2] [1 2]])
+  (def malformed-selection
+    (request cursor 222 "textDocument/selectionRange"
+             {:textDocument {:uri document-uri}
+              :positions [{:line 1 :character 5}]}))
+  (test (get-in malformed-selection [:result 0 :range :start])
+        @{:line 1 :character 3})
+  (test (get-in malformed-selection [:result 0 :range :end])
+        @{:line 1 :character 8})
+  (test (get-in malformed-selection [:result 0 :parent :range :start :line]) 1)
+
+  (change-text-document cursor document-uri "'\n(do\n  value)\n" 3)
+  (def reader-folding
+    (request cursor 228 "textDocument/foldingRange"
+             {:textDocument {:uri document-uri}}))
+  (test (map |[($ :startLine) ($ :endLine)] (get-in reader-folding [:result]))
+        @[[0 2] [1 2]])
+  (def reader-selection
+    (request cursor 229 "textDocument/selectionRange"
+             {:textDocument {:uri document-uri}
+              :positions [{:line 2 :character 4}]}))
+  (test (get-in reader-selection [:result 0 :parent :range :start :line]) 1)
+  (test (get-in reader-selection [:result 0 :parent :parent :range :start :line]) 0)
+
+  (change-text-document cursor document-uri
+                        "(def value 1)\nvalue\n(let [value 2\n" 4)
+  (test (get-in
+          (request cursor 230 "textDocument/documentHighlight"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 2 :character 8}})
+          [:result])
+        @[])
+  (test (get-in
+          (request cursor 232 "textDocument/definition"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 2 :character 8}})
+          [:result])
+        :null)
+  (test (get-in
+          (request cursor 236 "textDocument/references"
+                   {:textDocument {:uri document-uri}
+                    :position {:line 2 :character 8}
+                    :context {:includeDeclaration true}})
+          [:result])
+        @[])
+
+  (change-text-document cursor document-uri "(let [x 1] x x)\n" 5)
+  (def later-local
+    (request cursor 234 "textDocument/documentHighlight"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 13}}))
+  (test (map |(get-in $ [:range :start :character])
+             (get-in later-local [:result]))
+        @[6 11 13])
+  (def later-definition
+    (request cursor 235 "textDocument/definition"
+             {:textDocument {:uri document-uri}
+              :position {:line 0 :character 13}}))
+  (test (get-in later-definition [:result :range :start :character]) 6)
+  (exit-lsp cursor))
+
+(deftest "link module and source paths in the owning workspace"
+  (def base (temp-directory "janet-lsp-document-links"))
+  (def root-a (path/join base "a"))
+  (def root-b (path/join base "b"))
+  (os/mkdir root-a)
+  (os/mkdir root-b)
+  (each root [root-a root-b]
+    (spit (path/join root "target.janet")
+          (string "(def root-name " (string/format "%q" root) ")\n")))
+  (spit (path/join root-a "script.janet") "(def script true)\n")
+  (spit (path/join root-a "bare.janet") "(def bare true)\n")
+  (spit (path/join root-a "extensionless") "not a Janet module\n")
+  (spit (path/join root-a "extensionless.janet") "(def extensionless true)\n")
+  (spit (path/join root-a "module-path.janet") "(def dynamic true)\n")
+  (spit (path/join root-a "source-path") "(def dynamic-source true)\n")
+  (spit (path/join root-a "source.txt") "(def source true)\n")
+  (def main-a (path/join root-a "main.janet"))
+  (def source
+    (string "(import ./target :as target)\n"
+            "(require \"./target\")\n"
+            "(dofile \"./script.janet\")\n"
+            "(dofile \"./source.txt\")\n"
+            "(use ./target ./script)\n"
+            "(require \"./extensionless\")\n"
+            "(dofile \"./bare\")\n"
+            "# (require \"./missing\")\n"
+            "'(require \"./target\")\n"
+            "(quote (require \"./target\"))\n"
+            "|(require \"./target\")\n"
+            "@(dofile \"./source.txt\")\n"
+            "(require module-path)\n"
+            "(dofile source-path)\n"
+            "~(do ,(require \"./target\"))\n"
+            "@[(require \"./target\")]\n"
+            "~~(,(require \"./target\"))\n"
+            "(require \"./unterminated)\n"))
+  (spit main-a source)
+  (def uri-a (uri/path->file-uri root-a))
+  (def uri-b (uri/path->file-uri root-b))
+  (def main-uri (uri/path->file-uri main-a))
+  (each [root root-uri] [[root-a uri-a] [root-b uri-b]]
+    (index-cache/write (index-cache/path-for root-uri) root-uri
+                       index/default-exclusions
+                       (index/scan root index/default-exclusions)))
+  (def cursor (spawn-lsp))
+  (request cursor 223 "initialize"
+           {:rootUri nil
+            :workspaceFolders [{:uri uri-a :name "a"}
+                               {:uri uri-b :name "b"}]
+            :capabilities
+            {:textDocument {:diagnostic {}
+                            :documentLink {:tooltipSupport true}}}})
+  (open-text-document cursor main-uri source)
+  (def response
+    (request cursor 224 "textDocument/documentLink"
+             {:textDocument {:uri main-uri}}))
+  (def links (get-in response [:result]))
+  (test (length links) 10)
+  (test (map |(get-in $ [:range :start :line]) links)
+        @[0 1 2 3 4 4 5 10 14 15])
+  (test (get-in links [0 :range :start]) @{:line 0 :character 8})
+  (test (get-in links [0 :range :end]) @{:line 0 :character 16})
+  (test (get-in links [1 :range :start]) @{:line 1 :character 10})
+  (test (get-in links [1 :range :end]) @{:line 1 :character 18})
+  (test (= (get-in links [0 :target])
+           (uri/path->file-uri (path/join root-a "target.janet")))
+        true)
+  (test (not= (get-in links [0 :target])
+              (uri/path->file-uri (path/join root-b "target.janet")))
+        true)
+  (test (= (get-in links [2 :target])
+           (uri/path->file-uri (path/join root-a "script.janet")))
+        true)
+  (test (= (get-in links [3 :target])
+           (uri/path->file-uri (path/join root-a "source.txt")))
+        true)
+  (test (= (get-in links [6 :target])
+           (uri/path->file-uri (path/join root-a "extensionless.janet")))
+        true)
+  (test (get-in links [0 :tooltip]) "Open Janet source")
+
+  (def nested (path/join root-a "nested"))
+  (os/mkdir nested)
+  (spit (path/join root-a "runtime.janet") "(def runtime :root)\n")
+  (spit (path/join nested "runtime.janet") "(def runtime :nested)\n")
+  (def nested-uri (uri/path->file-uri (path/join nested "main.janet")))
+  (open-text-document cursor nested-uri "(dofile \"./runtime.janet\")\n")
+  (def nested-links
+    (get-in (request cursor 231 "textDocument/documentLink"
+                     {:textDocument {:uri nested-uri}})
+            [:result]))
+  (test (= (get-in nested-links [0 :target])
+           (uri/path->file-uri (path/join root-a "runtime.janet")))
+        true)
+  (exit-lsp cursor)
+  (remove-tree base))
+
+(deftest "encode structural ranges as negotiated UTF-8 positions"
+  (def cursor
+    (start-lsp {:general {:positionEncodings ["utf-8"]}
+                :textDocument {:diagnostic {}}}))
+  (def source "\"😀\" (do\n  value)\n")
+  (open-text-document cursor document-uri source)
+  (def folding
+    (request cursor 226 "textDocument/foldingRange"
+             {:textDocument {:uri document-uri}}))
+  (test (get-in folding [:result 0 :startCharacter]) 7)
+  (def selection
+    (request cursor 227 "textDocument/selectionRange"
+             {:textDocument {:uri document-uri}
+              :positions [{:line 0 :character 1}]}))
+  (test (get-in selection [:result 0 :range :start :character]) 0)
+  (test (get-in selection [:result 0 :range :end :character]) 6)
+  (change-text-document cursor document-uri "" 2)
+  (def empty-selection
+    (request cursor 233 "textDocument/selectionRange"
+             {:textDocument {:uri document-uri}
+              :positions [{:line 0 :character 0}]}))
+  (test (get-in empty-selection [:result 0 :range :start])
+        @{:line 0 :character 0})
+  (test (get-in empty-selection [:result 0 :range :end])
+        @{:line 0 :character 0})
   (exit-lsp cursor))
 
 (deftest "prepare and apply versioned workspace renames"

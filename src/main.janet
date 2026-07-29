@@ -3,6 +3,7 @@
 (import spork/rpc :as debug-rpc)
 
 (import ./documents)
+(import ./document-features)
 (import ./editor-features)
 (import ./lifecycle)
 (import ./logging)
@@ -68,7 +69,11 @@
    "textDocument/semanticTokens/full" true
    "textDocument/codeAction" true
    "textDocument/inlayHint" true
-   "textDocument/documentSymbol" true})
+   "textDocument/documentSymbol" true
+   "textDocument/documentHighlight" true
+   "textDocument/foldingRange" true
+   "textDocument/selectionRange" true
+   "textDocument/documentLink" true})
 
 (def position-methods
   {"textDocument/completion" true
@@ -76,6 +81,7 @@
    "textDocument/signatureHelp" true
    "textDocument/definition" true
    "textDocument/references" true
+   "textDocument/documentHighlight" true
    "textDocument/prepareRename" true
    "textDocument/rename" true})
 
@@ -115,8 +121,12 @@
         "textDocument/documentSymbol" (navigation/on-document-symbols state params)
         "workspace/symbol" (navigation/on-workspace-symbols state params)
         "textDocument/references" (navigation/on-references state params)
+        "textDocument/documentHighlight" (navigation/on-document-highlights state params)
         "textDocument/prepareRename" (navigation/on-prepare-rename state params)
         "textDocument/rename" (navigation/on-rename state params)
+        "textDocument/foldingRange" (document-features/on-folding-ranges state params)
+        "textDocument/selectionRange" (document-features/on-selection-ranges state params)
+        "textDocument/documentLink" (document-features/on-document-links state params)
 
         "workspace/didChangeWorkspaceFolders" (workspace/on-folders-changed state params)
         "workspace/didChangeWatchedFiles" (workspace/on-watched-files-changed state params)

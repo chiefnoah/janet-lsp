@@ -195,20 +195,30 @@
       (do
         (put reference :identity (declared :identity))
         (put reference :identity-kind :definition))
-      (when-let [resolved
-                 (parser/definition-at (get-in reference [:range :start])
-                                       content (reference :name))]
-        (def definition
-          (first (filter |(same-position? (get-in resolved [:range :start])
-                                          (get-in $ [:selection-range :start]))
-                         definitions)))
-        (put reference :identity
-             (if definition
-               (definition :identity)
+      (if-let [binding
+               (parser/binding-at (get-in reference [:range :start]) content
+                                  syntax-tree)]
+        (do
+          (put reference :identity
                (string document-uri "#local:"
-                       (get-in resolved [:range :start :line]) ":"
-                       (get-in resolved [:range :start :character]))))
-        (put reference :identity-kind (if definition :definition :local)))))
+                       (get-in binding [:start :line]) ":"
+                       (get-in binding [:start :character])))
+          (put reference :identity-kind :local))
+        (when-let [resolved
+                   (parser/binding-definition-at
+                     (get-in reference [:range :start])
+                     content (reference :name))]
+          (def definition
+            (first (filter |(same-position? (get-in resolved [:range :start])
+                                            (get-in $ [:selection-range :start]))
+                           definitions)))
+          (put reference :identity
+               (if definition
+                 (definition :identity)
+                 (string document-uri "#local:"
+                         (get-in resolved [:range :start :line]) ":"
+                         (get-in resolved [:range :start :character]))))
+          (put reference :identity-kind (if definition :definition :local))))))
   {:uri document-uri
    :content-hash (content-hash content)
    :definitions definitions

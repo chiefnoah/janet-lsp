@@ -14,22 +14,53 @@
   (def word (lookup/word-at location content))
   (def name (word :word))
   (def workspace (server-utils/document-workspace state document))
-  (def resolved (and (not (empty? name))
-                     (parser/definition-at location content name)))
-  (def indexed (and (not (empty? name))
+  (def local-declaration
+    (parser/binding-at location content (get-in document [:analysis :syntax-tree])))
+  (def parser-resolved
+    (and (not (empty? name))
+         (not local-declaration)
+         (parser/binding-definition-at location content name)))
+  (def parser-resolved-binding
+    (and parser-resolved
+         (parser/binding-at (get-in parser-resolved [:range :start]) content
+                            (get-in document [:analysis :syntax-tree]))))
+  (def resolved
+    (and (not (empty? name))
+         (if local-declaration
+           {:name name :range local-declaration}
+           (and parser-resolved-binding
+                {:name name :range parser-resolved-binding}))))
+  (var indexed (and (not (empty? name))
                     (index/resolve-definition workspace document-uri name location)))
-  (def indexed-local?
+  (def resolved-indexed?
     (and resolved indexed
          (server-utils/same-position?
            (get-in resolved [:range :start])
            (get-in indexed [:selection-range :start]))))
-  (def local (and resolved (not indexed-local?) resolved))
+  (def occurrence
+    (first
+      (filter |(and (server-utils/same-position?
+                      (get-in $ [:range :start])
+                      {:line (location :line)
+                       :character (first (word :range))})
+                    (= name ($ :name)))
+              (get-in document [:analysis :index :references] @[]))))
+  (when (and indexed
+             (not (or (and occurrence
+                           (= (occurrence :identity) (indexed :identity)))
+                      (server-utils/same-position?
+                        (get-in indexed [:selection-range :start])
+                        {:line (location :line)
+                         :character (first (word :range))}))))
+    (set indexed nil))
+  (def local (and resolved (not resolved-indexed?) resolved))
   {:uri document-uri
    :document document
    :content content
    :location location
    :word word
    :name name
+   :occurrence occurrence
    :workspace workspace
    :local local
    :indexed (and (not local) indexed)})
@@ -53,7 +84,7 @@
           :range (server-utils/lsp-range state target-content (definition :range))}
          :null)])
 
-    (not (empty? name))
+    (and (not (empty? name)) (context :occurrence))
     (if-let [binding (get-in context [:document :eval-env (symbol name)])
              [source-path source-line source-column] (binding :source-map)
              target-path (path/abspath source-path)
@@ -155,7 +186,8 @@
 
 (defn references [state params]
   (def context (symbol-context state params))
-  (if (empty? (context :name))
+  (if (or (empty? (context :name))
+          (not (or (context :local) (context :indexed))))
     @[]
     (distinct
       (catseq [found :in (raw-references
@@ -168,6 +200,34 @@
 
 (defn on-references [state params]
   [:ok state (references state params)])
+
+(defn on-document-highlights [state params]
+  (def context (symbol-context state params))
+  (if (or (empty? (context :name))
+          (not (or (context :local) (context :indexed))))
+    [:ok state @[]]
+    (let [document-uri (context :uri)
+          definition (or (context :local) (context :indexed))
+          definition-uri (if (context :local)
+                           document-uri
+                           (definition :uri))
+          definition-start
+          (get-in definition [(if (context :local) :range :selection-range) :start])
+          highlights
+          (catseq [reference :in (raw-references context true)
+                   :when (= document-uri (reference :uri))]
+            {:range (server-utils/lsp-range state (context :content)
+                                           (reference :range))
+             :kind (if (and (= definition-uri document-uri)
+                            (server-utils/same-position?
+                              definition-start
+                              (get-in reference [:range :start])))
+                     3
+                     2)})]
+      [:ok state
+       (sort-by |[(get-in $ [:range :start :line])
+                  (get-in $ [:range :start :character])]
+                (distinct highlights))])))
 
 (defn- rename-target [state params]
   (def context (symbol-context state params))
