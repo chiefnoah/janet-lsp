@@ -1339,6 +1339,15 @@
            (uri/path->file-uri (path/join root-a "extensionless.janet")))
         true)
   (test (get-in links [0 :tooltip]) "Open Janet source")
+  (def import-definition
+    (request cursor 225 "textDocument/definition"
+             {:textDocument {:uri main-uri}
+              :position {:line 0 :character 12}}))
+  (test (= (get-in import-definition [:result :uri])
+           (uri/path->file-uri (path/join root-a "target.janet")))
+        true)
+  (test (get-in import-definition [:result :range :start])
+        @{:line 0 :character 0})
 
   (def nested (path/join root-a "nested"))
   (os/mkdir nested)

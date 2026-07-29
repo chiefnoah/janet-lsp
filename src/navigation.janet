@@ -70,7 +70,16 @@
 (defn on-definition [state params]
   (def context (symbol-context state params))
   (def name (context :name))
+  (def source-link
+    (first (filter |(server-utils/position-in-range?
+                      (get params "position") ($ :range))
+                   (document-features/document-links state params))))
   (cond
+    source-link
+    [:ok state {:uri (source-link :target)
+                :range {:start {:line 0 :character 0}
+                        :end {:line 0 :character 0}}}]
+
     (context :local)
     [:ok state {:uri (context :uri)
                 :range (server-utils/lsp-range state (context :content)

@@ -408,7 +408,7 @@
       (when (> quasiquote-depth 0) (-= quasiquote-depth 1))))
   (and executable (= 0 quasiquote-depth)))
 
-(defn on-document-links [state params]
+(defn document-links [state params]
   (def document (server-utils/document state params))
   (def source (document :content))
   (def scanned (scan source))
@@ -445,6 +445,9 @@
           (when (state :document-link-tooltips)
             (put link :tooltip "Open Janet source"))
           (array/push links link)))))
-  [:ok state (sort-by |[(get-in $ [:range :start :line])
-                        (get-in $ [:range :start :character])]
-                      links)])
+  (sort-by |[(get-in $ [:range :start :line])
+             (get-in $ [:range :start :character])]
+           links))
+
+(defn on-document-links [state params]
+  [:ok state (document-links state params)])
