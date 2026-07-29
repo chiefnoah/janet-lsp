@@ -319,38 +319,77 @@
   (visit (or tree (syntax-tree source)) false)
   found)
 
+(defn binding-ranges [tree source]
+  "Collect parser-recognized binding leaves by name."
+  (def found @{})
+  (defn visit [node binding? scope]
+    (when (dictionary? node)
+      (def tagged? (has-value? [:parameters :variables :fn] (node :tag)))
+      (def next-scope
+        (if (has-value? [:let :loop :lambda :defn :for-each] (node :tag))
+          [(node :index) (+ (node :index) (node :len))]
+          scope))
+      (if (and (or binding? tagged?) (string? (node :value)))
+        (do
+          (unless (get found (node :value)) (put found (node :value) @[]))
+          (array/push (get found (node :value))
+                      {:name (node :value)
+                       :scope scope
+                       :range {:start (lookup/from-index (node :index) source)
+                               :end (lookup/from-index
+                                      (+ (node :index) (node :len)) source)}}))
+        (when (indexed? (node :value))
+          (each child (node :value)
+            # A named function is bound in its containing scope, not only its body.
+            (visit child (or binding? tagged?)
+                   (if (= :fn (get child :tag)) scope next-scope)))))))
+  (visit tree false nil)
+  found)
+
 (defn- binding-nodes [heads]
   (array/concat
     (catseq [head :in heads] (get-value-for-tag :parameters head))
     (catseq [head :in heads] (get-defined-for-tag :variables head))
     (catseq [head :in heads] (get-fn-names head))))
 
-(defn- definition-at* [loc source name binding-only?]
+(defn- definition-at* [loc source name binding-only? &opt tree bindings]
   (try
-    (when (has-value? (visible-bindings loc source) name)
-      (def candidates
-        (filter |(let [range ($ :range)]
-                   (and
-                     (or (< (get-in range [:end :line]) (loc :line))
-                         (and (= (get-in range [:end :line]) (loc :line))
-                              (< (get-in range [:end :character])
-                                 (loc :character))))
-                     (or (not binding-only?)
-                         (binding-at (get-in range [:start]) source))))
-                (references-for name source)))
-      (def lexical-scope?
-        (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-" "defmacro"] $)
-                   (lookup/enclosing-call-heads loc source))))
-      (when-let [candidate ((if lexical-scope? last first) candidates)]
-        {:name name :range (candidate :range)}))
+    (do
+      (def visible
+        (if tree
+          (map |(string ($ :label))
+               (or (get-syms-from-tree tree (lookup/to-index loc source)) @[]))
+          (visible-bindings loc source)))
+      (when (has-value? visible name)
+        (def location-index (lookup/to-index loc source))
+        (def candidates
+          (filter |(let [range ($ :range)]
+                     (and
+                       (or (< (get-in range [:end :line]) (loc :line))
+                           (and (= (get-in range [:end :line]) (loc :line))
+                                (< (get-in range [:end :character])
+                                   (loc :character))))
+                       (or (nil? ($ :scope))
+                           (and (<= (get-in $ [:scope 0]) location-index)
+                                (< location-index (get-in $ [:scope 1]))))
+                       (or bindings (not binding-only?)
+                           (binding-at (get-in range [:start]) source tree))))
+                  (if bindings (get bindings name @[])
+                    (references-for name source))))
+        (def lexical-scope?
+          (or binding-only?
+              (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-" "defmacro"] $)
+                         (lookup/enclosing-call-heads loc source)))))
+        (when-let [candidate ((if lexical-scope? last first) candidates)]
+          {:name name :range (candidate :range)})))
     ([_] nil)))
 
 (defn definition-at [loc source name]
   (definition-at* loc source name false))
 
-(defn binding-definition-at [loc source name]
+(defn binding-definition-at [loc source name &opt tree bindings]
   "Resolve name only through parser-recognized binding leaves."
-  (definition-at* loc source name true))
+  (definition-at* loc source name true tree bindings))
 
 (varfn references-for [name source]
   "Return byte-column ranges for code identifiers matching name."

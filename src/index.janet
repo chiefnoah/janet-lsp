@@ -39,10 +39,10 @@
   (and (dictionary? node) (has-value? [:ptuple :def :defn :lambda] (node :tag))
        (indexed? (node :value)) (not (empty? (node :value)))))
 
-(defn- head [node source]
+(defn- head [node source mask]
   (when (form? node)
     (def fragment
-      (string/slice (lookup/code-mask source)
+      (string/slice mask
                     (node :index) (+ (node :index) (node :len))))
     (when-let [value
                (get-in (first (filter |(not (empty? ($ 1)))
@@ -127,8 +127,8 @@
    (map |{:name $ :range target-range}
         (filter |(not (empty? $)) implementation-names))})
 
-(defn- definition [form document-uri source top-level container]
-  (def form-head (head form source))
+(defn- definition [form document-uri source mask top-level container]
+  (def form-head (head form source mask))
   (when-let [kind (get definition-heads form-head)
              name-node (definition-name-node form)
              name (and (leaf? name-node) (name-node :value))]
@@ -166,8 +166,8 @@
     (when-let [option (find-index |(= key $) parsed)]
       (get parsed (inc option)))))
 
-(defn- import-records [form source top-level]
-  (def form-head (head form source))
+(defn- import-records [form source mask top-level]
+  (def form-head (head form source mask))
   (when (get import-heads form-head)
     (def parsed
       (try (parse (string/slice source (form :index)
@@ -203,11 +203,11 @@
          :range (node-range form source)}))))
 
 (defn- collect-nodes
-  [node document-uri source definitions references imports depth container]
+  [node document-uri source mask definitions references imports depth container]
   (when (dictionary? node)
-    (def found (definition node document-uri source (= depth 0) container))
+    (def found (definition node document-uri source mask (= depth 0) container))
     (when found (array/push definitions found))
-    (each imported (or (import-records node source (= depth 0)) @[])
+    (each imported (or (import-records node source mask (= depth 0)) @[])
       (array/push imports imported))
     (when (leaf? node)
       (array/push references
@@ -215,7 +215,7 @@
                     :range (node-range node source)}))
     (when (indexed? (node :value))
       (each child (node :value)
-        (collect-nodes child document-uri source definitions references imports
+        (collect-nodes child document-uri source mask definitions references imports
                        (if (form? node) (inc depth) depth)
                        (if found (found :identity) container))))))
 
@@ -376,13 +376,15 @@
 
 (defn analyze [document-uri content &opt syntax-tree]
   (def tree (or syntax-tree (parser/syntax-tree content)))
+  (def mask (lookup/code-mask content))
   (def definitions @[])
   (def references @[])
   (def imports @[])
   (try
     (each node (tree :value)
-      (collect-nodes node document-uri content definitions references imports 0 nil))
+      (collect-nodes node document-uri content mask definitions references imports 0 nil))
     ([_] nil))
+  (def bindings (parser/binding-ranges tree content))
   (each reference references
     (def declared
       (first (filter |(same-position? (get-in reference [:range :start])
@@ -401,9 +403,9 @@
                        (get-in binding [:start :character])))
           (put reference :identity-kind :local))
         (when-let [resolved
-                   (parser/binding-definition-at
-                     (get-in reference [:range :start])
-                     content (reference :name))]
+                    (parser/binding-definition-at
+                      (get-in reference [:range :start])
+                      content (reference :name) tree bindings)]
           (def definition
             (first (filter |(same-position? (get-in resolved [:range :start])
                                             (get-in $ [:selection-range :start]))
