@@ -351,6 +351,12 @@ $ janet bench/large-workspace.janet 200 100
 
 A .jimage (Janet image) file will be generated in `/build`. Using a .jimage file makes Janet LSP fully cross-platform (wherever there is a compatible Janet binary on the user's path). But it also means that you must have a Janet binary to use Janet LSP (this author struggles to imagine a scenario where you would both need the LSP and NOT have Janet itself installed).
 
+Platform-sensitive temporary directories, path-list separators, path casing,
+and executable extensions are handled for Windows, macOS, and Unix-like hosts.
+The integration suite also exercises capability profiles representative of VS
+Code, Neovim, Helix, and Zed, including position encodings, lifecycle, encoded
+file URIs, and versioned workspace edits.
+
 ### Installing
 
 After running the commands above, the following command will copy the `janet-lsp` binscript to a location that can be executed via the command line.

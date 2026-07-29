@@ -11,6 +11,7 @@
 (import ../src/index-cache)
 (import ../src/configuration)
 (import ../src/parser)
+(import ../src/platform)
 (import ../src/position)
 (import ../src/transport)
 (import ../src/uri)
@@ -219,7 +220,7 @@
         nil))
 
 (deftest "persist and incrementally validate workspace index caches"
-  (def root (string "/tmp/janet-lsp-index-cache-" (os/getpid)))
+  (def root (platform/temp-path (string "janet-lsp-index-cache-" (os/getpid))))
   (def cache-directory (string root "-data"))
   (def source-path (path/join root "main.janet"))
   (def added-path (path/join root "added.janet"))
@@ -724,6 +725,16 @@
   (test (uri/path->file-uri "/tmp/[]@!$&'()*+,;=.janet")
         "file:///tmp/%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D.janet"))
 
+(deftest "derive portable filesystem and process conventions"
+  (test (platform/path-list-separator :windows) ";")
+  (test (platform/path-list-separator :linux) ":")
+  (test (platform/normalize-path "C:/Users/NAME" :windows) "c:/users/name")
+  (test (platform/normalize-path "/Users/Name" :macos) "/Users/Name")
+  (test (platform/executable-names "janet" :windows [".EXE" ".CMD"])
+        @["janet.exe" "janet.cmd"])
+  (test (deep= (platform/executable-names "janet" :macos) ["janet"]) true)
+  (test (string? (platform/temp-directory)) true))
+
 (deftest "reject non-file and malformed URIs"
   (test (uri/file-uri->path "untitled:buffer") nil)
   (test (uri/file-uri->path "file:///tmp/a#fragment") nil)
@@ -731,7 +742,7 @@
               "invalid percent escape in URI"))
 
 (deftest "untrusted analysis does not execute workspace code"
-  (def prefix (string "/tmp/janet-lsp-safe-analysis-" (os/getpid)))
+  (def prefix (platform/temp-path (string "janet-lsp-safe-analysis-" (os/getpid))))
   (def macro-marker (string prefix "-macro"))
   (def import-marker (string prefix "-import"))
   (def flycheck-marker (string prefix "-flycheck"))

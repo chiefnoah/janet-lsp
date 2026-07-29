@@ -1,4 +1,5 @@
 (import ./position)
+(import ./platform)
 (import ./uri)
 
 (defn document-uri [params]
@@ -8,8 +9,8 @@
   (get-in state [:documents (document-uri params)]))
 
 (defn path-in-workspace? [filepath root-path]
-  (def candidate (if (= :windows (os/which)) (string/ascii-lower filepath) filepath))
-  (def root (if (= :windows (os/which)) (string/ascii-lower root-path) root-path))
+  (def candidate (platform/normalize-path filepath))
+  (def root (platform/normalize-path root-path))
   (or (= candidate root)
       (string/has-prefix? (string root (if (string/has-suffix? "/" root) "" "/"))
                           candidate)))

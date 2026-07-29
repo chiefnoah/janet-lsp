@@ -36,6 +36,9 @@ Format for entires is <version-string> - release date.
   trusted command execution, and a synthetic large-workspace benchmark.
 - Reported workspace index spawn, scan, parse, and cache failures to clients
   with workspace context and retry-safe state.
+- Centralized platform-specific temporary paths, path comparison, and
+  executable lookup, and added VS Code, Neovim, Helix, and Zed protocol smoke
+  profiles.
 - Added stable unused-parameter warnings; trusted compiler diagnostics report
   unknown symbols, positional arity errors, and unsupported named arguments.
 - Split the server into focused lifecycle, document, workspace, navigation,

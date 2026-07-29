@@ -265,6 +265,74 @@
   (test (get-in hover [:result :range :end :character]) 17)
   (exit-lsp cursor))
 
+(deftest "smoke test real client capability profiles"
+  (each [client capabilities encoding]
+        [["VS Code"
+          {:general {:positionEncodings ["utf-16"]}
+           :window {:workDoneProgress true}
+           :workspace {:workspaceFolders true
+                       :workspaceEdit {:documentChanges true
+                                       :resourceOperations ["create" "rename" "delete"]}}
+           :textDocument {:diagnostic {}
+                          :completion {:completionItem {:snippetSupport true}}}}
+          "utf-16"]
+         ["Neovim"
+          {:general {:positionEncodings ["utf-8" "utf-16"]}
+           :workspace {:workspaceEdit {:documentChanges true}}
+           :textDocument {:diagnostic {} :foldingRange {:lineFoldingOnly true}}}
+          "utf-8"]
+         ["Helix"
+          {:workspace {:workspaceEdit {:documentChanges true}}
+           :textDocument {:diagnostic {} :documentLink {:tooltipSupport true}}}
+          "utf-16"]
+         ["Zed"
+          {:general {:positionEncodings ["utf-8"]}
+           :workspace {:workspaceEdit {:documentChanges true}}
+           :textDocument {:diagnostic {}
+                          :completion {:completionItem {:snippetSupport true}}}}
+          "utf-8"]]
+    (def cursor (spawn-lsp))
+    (def initialized
+      (request cursor 0 "initialize"
+               {:rootUri :null :capabilities capabilities
+                :initializationOptions {}}))
+    (test (= (get-in initialized
+                     [:result :capabilities :positionEncoding])
+             encoding)
+          true)
+    (notify cursor "initialized")
+    (def encoded-uri
+      (string/replace "format-file-after.txt" "%66ormat-file-after.txt" document-uri))
+    (open-text-document cursor encoded-uri "(def value 1)\nvalue\n" 3)
+    (def renamed
+      (get-in
+        (request cursor 317 "textDocument/rename"
+                 {:textDocument {:uri encoded-uri}
+                  :position {:line 1 :character 2}
+                  :newName "renamed"})
+        [:result :documentChanges 0]))
+    (test (= encoded-uri (get-in renamed [:textDocument :uri])) true)
+    (test (get-in renamed [:textDocument :version]) 3)
+    (test (all |(= "renamed" ($ :newText)) (renamed :edits)) true)
+    (change-text-document cursor encoded-uri
+                          "(def renamed 1)\nrenamed\n" 4)
+    (test (length
+            (get-in
+              (request cursor 318 "textDocument/references"
+                       {:textDocument {:uri encoded-uri}
+                        :position {:line 1 :character 2}
+                        :context {:includeDeclaration true}})
+              [:result]))
+          2)
+    (close-text-document cursor encoded-uri)
+    (test (get-in
+            (request cursor 319 "textDocument/hover"
+                     {:textDocument {:uri encoded-uri}
+                      :position {:line 0 :character 1}})
+            [:result])
+          :null)
+    (exit-lsp cursor)))
+
 (deftest "reject requests before initialization"
   (def cursor (spawn-lsp))
   (def response (request cursor 30 "janet/serverInfo"))

@@ -1,6 +1,7 @@
 (import spork/json)
 (import spork/path)
 (import ../../src/index-cache)
+(import ../../src/platform)
 (import ../../src/uri)
 
 (def document-uri
@@ -127,7 +128,7 @@
   (read-output cursor))
 
 (defn temp-directory [name]
-  (def root (path/join "/tmp" (string name "-" (os/getpid))))
+  (def root (path/join (platform/temp-directory) (string name "-" (os/getpid))))
   (when (os/stat root) (remove-tree root))
   (os/mkdir root)
   root)

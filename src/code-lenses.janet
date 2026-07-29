@@ -2,6 +2,7 @@
 (import ./document-features)
 (import ./index)
 (import ./lookup)
+(import ./platform)
 (import ./request-control)
 (import ./server-utils)
 (import ./uri)
@@ -215,9 +216,11 @@
                 expression (string "(dofile " (string/format "%q" filepath)
                                    ")\n(" name ")")
                 argv (if (= :test kind)
-                       [(if (os/stat judge) judge "judge")
+                       [(if (os/stat judge) judge
+                          (or (platform/find-executable "judge") "judge"))
                         "--name-exact" name filepath]
-                       ["janet" "-e" expression])]
+                       [(or (platform/find-executable "janet") "janet")
+                        "-e" expression])]
             (var process nil)
             (match (try
                      (ev/with-deadline 30

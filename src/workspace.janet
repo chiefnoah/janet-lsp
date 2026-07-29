@@ -3,6 +3,7 @@
 (import ./index)
 (import ./index-cache)
 (import ./logging)
+(import ./platform)
 (import ./rpc)
 (import ./server-utils)
 (import ./transport)
@@ -17,10 +18,7 @@
 (defn- janet-executable []
   (def executable (dyn :executable))
   (or (and (os/stat executable) (path/abspath executable))
-      (first (filter os/stat
-                     (map |(path/join $ executable)
-                          (string/split (if (= :windows (os/which)) ";" ":")
-                                        (or (os/getenv "PATH") "")))))
+      (platform/find-executable executable)
       executable))
 
 (defn find-all-module-files [filepath &opt search-jpm-tree explicit results]
@@ -161,7 +159,9 @@
       (put workspace :reported-index-failure nil)
       (def digest (hash (workspace :uri)))
       (def token (string "janet-lsp/index/" digest))
-      (def output (string "/tmp/janet-lsp-index-" (os/getpid) "-" digest ".jdn"))
+      (def output
+        (platform/temp-path
+          (string "janet-lsp-index-" (os/getpid) "-" digest ".jdn")))
       (each stale [output (string output ".tmp")]
         (when (os/stat stale) (os/rm stale)))
       (def process

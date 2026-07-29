@@ -1,4 +1,5 @@
 (import ./index)
+(import ./platform)
 (import ./uri)
 (import spork/path)
 
@@ -17,7 +18,7 @@
         (path/join xdg "janet-lsp"))
       (when-let [home (os/getenv "HOME")]
         (path/join home ".cache" "janet-lsp"))
-      (path/join "/tmp" "janet-lsp-cache")))
+      (path/join (platform/temp-directory) "janet-lsp-cache")))
 
 (defn path-for [root-uri]
   (path/join (directory) (string "workspace-" (index/content-hash root-uri) ".jdn")))
