@@ -64,6 +64,19 @@
 (defn- refresh [state document workspace]
   (analysis/refresh document workspace (state :position-encoding)))
 
+(defn refresh-pending [state params]
+  (when-let [document (server-utils/document state params)]
+    (def workspace (server-utils/document-workspace state document))
+    (each candidate (values (state :documents))
+      (when (and (candidate :analysis-pending)
+                 (= workspace (server-utils/document-workspace state candidate)))
+        (refresh state candidate workspace)
+        (put candidate :analysis-pending nil)))
+    (unless (analysis/current document workspace)
+      (refresh state document workspace))
+    (put document :analysis-pending nil))
+  state)
+
 (defn- diagnostic-message [document snapshot &opt diagnostics]
   {:method "textDocument/publishDiagnostics"
    :params {:uri (document :uri)
@@ -114,11 +127,37 @@
             [:noresponse state])
           (do
             (merge-into document {:content content :version version
-                                  :desynchronized false})
-            (def snapshot (refresh state document workspace))
-            (if (dyn :push-diagnostics)
-              (push-with-dependents state document workspace snapshot)
-              [:noresponse state])))))))
+                                  :desynchronized false
+                                  :analysis-pending version})
+            (analysis/note-version document)
+            (if (and (dyn :push-diagnostics) (state :messages))
+              (do
+                (ev/go
+                  (fn []
+                    (ev/sleep 0.025)
+                    (ev/give (state :messages)
+                             [:ok {"jsonrpc" "2.0"
+                                   "method" "janet/internal/analyzeDocument"
+                                   "params" {"textDocument" {"uri" (document :uri)}
+                                             "version" version}}])))
+                [:noresponse state])
+              (if (dyn :push-diagnostics)
+                (let [snapshot (refresh state document workspace)]
+                  (put document :analysis-pending nil)
+                  (push-with-dependents state document workspace snapshot))
+                [:noresponse state]))))))))
+
+(defn on-pending-analysis [state params]
+  (if-let [document (server-utils/document state params)]
+    (let [version (get params "version")]
+      (if (= version (document :analysis-pending))
+        (let [workspace (server-utils/document-workspace state document)
+              snapshot (or (analysis/current document workspace)
+                           (refresh state document workspace))]
+          (put document :analysis-pending nil)
+          (push-with-dependents state document workspace snapshot))
+        [:noresponse state]))
+    [:noresponse state]))
 
 (defn on-close [state params]
   (if-let [document (server-utils/document state params)]

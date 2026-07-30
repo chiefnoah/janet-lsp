@@ -58,8 +58,8 @@
 (defn store [document snapshot]
   (unless (document :snapshots) (put document :snapshots @{}))
   (unless (document :snapshot-order) (put document :snapshot-order @[]))
-  (unless (get (document :snapshots) (snapshot :key))
-    (put (document :snapshots) (snapshot :key) snapshot)
+  (put (document :snapshots) (snapshot :key) snapshot)
+  (unless (has-value? (document :snapshot-order) (snapshot :key))
     (array/push (document :snapshot-order) (snapshot :key)))
   (while (> (length (document :snapshot-order)) max-snapshots)
     (def oldest ((document :snapshot-order) 0))
@@ -68,6 +68,17 @@
   (put document :analysis snapshot)
   (put document :eval-env (snapshot :eval-env))
   snapshot)
+
+(defn note-version [document]
+  (unless (document :snapshot-order) (put document :snapshot-order @[]))
+  (def snapshot-key (key (document :version) (document :content)))
+  (unless (has-value? (document :snapshot-order) snapshot-key)
+    (array/push (document :snapshot-order) snapshot-key))
+  (while (> (length (document :snapshot-order)) max-snapshots)
+    (def oldest ((document :snapshot-order) 0))
+    (array/remove (document :snapshot-order) 0)
+    (put (document :snapshots) oldest nil))
+  document)
 
 (defn invalidate [document]
   (put document :analysis nil)

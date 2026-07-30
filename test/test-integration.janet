@@ -584,6 +584,33 @@
   (test (get-in response [:params :version]) 2)
   (test (get-in response [:params :diagnostics]) @[]))
 
+(deftest: with-process-open "coalesce rapid document analysis to the latest version" [cursor]
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 2}
+           :contentChanges [{:text "("}]})
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 3}
+           :contentChanges [{:text "(def latest-version 3)\n"}]})
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 4}
+           :contentChanges [{:text "(def latest-version 4)\nlatest\n"}]})
+  (def response (read-output cursor))
+  (test (get-in response [:params :version]) 4)
+  (test (has-value? (map |($ :code) (get-in response [:params :diagnostics]))
+                    "janet.parse.unclosed-delimiter")
+        false)
+  (test (all |(= 4 (get-in $ [:data :version]))
+             (get-in response [:params :diagnostics]))
+        true)
+  (def completion
+    (request cursor 216 "textDocument/completion"
+             {:textDocument {:uri document-uri}
+              :position {:line 1 :character 6}}))
+  (def item
+    (first (filter |(= "latest-version" ($ :label))
+                   (get-in completion [:result :items]))))
+  (test (get-in item [:data :version]) 4))
+
 (deftest "negotiate and apply incremental document synchronization"
   (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
   (test (get-in (cursor :initialize)

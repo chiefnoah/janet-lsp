@@ -120,6 +120,7 @@
         "textDocument/didOpen" (documents/on-open state params)
         "textDocument/didChange" (documents/on-change state params)
         "textDocument/didClose" (documents/on-close state params)
+        "janet/internal/analyzeDocument" (documents/on-pending-analysis state params)
         "textDocument/diagnostic"
         (documents/on-diagnostic state params (get message "id"))
         "workspace/diagnostic"
@@ -269,10 +270,13 @@
   (unless (rpc/response? message)
     (try (workspace/refresh-scans state)
       ([err fiber]
-        (logging/err (string/format "Could not refresh workspace indexes: %m" err)
-                     [:index])
-        (debug/stacktrace fiber err ""))))
-  (when (and method (not= "textDocument/didChange" method))
+       (logging/err (string/format "Could not refresh workspace indexes: %m" err)
+                    [:index])
+       (debug/stacktrace fiber err ""))))
+  (when (get open-document-methods method)
+    (documents/refresh-pending state (get message "params")))
+  (when (and method (not= "textDocument/didChange" method)
+             (not= "janet/internal/analyzeDocument" method))
     (workspace/refresh-links state))
   (cond
     (rpc/response? message)
@@ -323,6 +327,7 @@
 (defn- concurrent-message-loop [state]
   (def incoming (ev/thread-chan 64))
   (def messages (ev/chan 64))
+  (put state :messages messages)
   (put state :dispatcher (ev/go |(dispatch-loop state messages)))
   (ev/thread
     (fn []
