@@ -919,23 +919,54 @@
            :when (and (= identity (call :caller)) (call :identity))]
     call))
 
-(defn files [root exclusions]
+(defn- excluded-relative-path? [relative exclusions]
+  (def parts (string/split "/" relative))
+  (or (any? (map |(has-value? exclusions $) parts))
+      (any? (map |(string/has-prefix? "." $)
+                 (array/slice parts 0 (max 0 (dec (length parts))))))))
+
+(defn- git-files [root]
+  (try
+    (with [proc (os/spawn ["git" "-C" root "ls-files" "--cached" "--others"
+                           "--exclude-standard" "-z"] :xp {:out :pipe :err :pipe})]
+      (let [[out _ status] (ev/gather
+                             (ev/read (proc :out) :all)
+                             (ev/read (proc :err) :all)
+                             (os/proc-wait proc))]
+        (and (= 0 status) out
+             (filter |(not (empty? $)) (string/split "\0" out)))))
+    ([_] nil)))
+
+(defn source-files [root exclusions suffixes]
   (unless (os/stat root)
     (error (string "workspace root does not exist: " root)))
   (def found @[])
-  (def pending @[root])
-  (while (not (empty? pending))
-    (def current (array/pop pending))
-    (case (os/stat current :mode)
-      :directory
-      (unless (has-value? exclusions (path/basename current))
-        (each entry (os/dir current) (array/push pending (path/join current entry))))
-      :file
-      (when (and (string/has-suffix? ".janet" current)
-                 (not (any? (map |(has-value? exclusions $)
-                                 (string/split "/" current)))))
-        (array/push found current))))
+  (if-let [tracked (git-files root)]
+    (each relative tracked
+      (def current (path/join root relative))
+      (when (and (= :file (os/stat current :mode))
+                 (not (excluded-relative-path? relative exclusions))
+                 (any? (map |(string/has-suffix? $ current) suffixes)))
+        (array/push found current)))
+    (let [pending @[[root ""]]]
+      (while (not (empty? pending))
+        (def [current relative] (array/pop pending))
+        (case (os/stat current :mode)
+          :directory
+          (unless (and (not (empty? relative))
+                       (excluded-relative-path? (string relative "/file") exclusions))
+            (each entry (os/dir current)
+              (array/push pending
+                          [(path/join current entry)
+                           (if (empty? relative) entry (path/join relative entry))])))
+          :file
+          (when (and (not (excluded-relative-path? relative exclusions))
+                     (any? (map |(string/has-suffix? $ current) suffixes)))
+            (array/push found current))))))
   (sort found))
+
+(defn files [root exclusions]
+  (source-files root exclusions [".janet"]))
 
 (defn scan [root exclusions]
   (def records @{})

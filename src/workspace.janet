@@ -21,21 +21,13 @@
       (platform/find-executable executable)
       executable))
 
-(defn find-all-module-files [filepath &opt search-jpm-tree explicit results]
-  (default explicit true)
-  (default results @[])
-  (case (os/stat filepath :mode)
-    :directory
-    (when (or explicit search-jpm-tree (not= (path/basename filepath) "jpm_tree"))
-      (each entry (os/dir filepath)
-        (find-all-module-files (path/join filepath entry)
-                               search-jpm-tree false results)))
-    :file
-    (when (and (or explicit (not= (path/basename filepath) "project.janet"))
-               (any? (map |(string/has-suffix? $ filepath)
-                           [".janet" ".jimage" ".so"])))
-      (array/push results filepath)))
-  results)
+(defn find-all-module-files [filepath &opt search-jpm-tree]
+  (def exclusions
+    (if search-jpm-tree
+      (filter |(not= "jpm_tree" $) index/default-exclusions)
+      index/default-exclusions))
+  (filter |(not= "project.janet" (path/basename $))
+          (index/source-files filepath exclusions [".janet" ".jimage" ".so"])))
 
 (defn find-unique-paths [paths]
   (->> (seq [found-path :in paths]

@@ -23,6 +23,17 @@
 (import spork/json)
 (import spork/path)
 
+(varfn remove-test-tree [])
+
+(varfn remove-test-tree [target]
+  (case (os/stat target :mode)
+    :directory
+    (do
+      (each entry (os/dir target)
+        (remove-test-tree (path/join target entry)))
+      (os/rmdir target))
+    (when (os/stat target) (os/rm target))))
+
 (deftest "decode strict JSON"
   (test (json/decode "1e3") 1000)
   (test (json/decode "null") :null)
@@ -141,6 +152,22 @@
   (test (length (index/definitions workspace "value")) 1)
   (index/remove workspace "file:///workspace/main.janet")
   (test (index/definitions workspace "value") @[]))
+
+(deftest "honor git ignores and hidden directories during source discovery"
+  (def root (platform/temp-path (string "janet-lsp-source-files-" (os/getpid))))
+  (when (os/stat root) (remove-test-tree root))
+  (os/mkdir root)
+  (each directory ["ignored" ".hidden" "dist"]
+    (os/mkdir (path/join root directory))
+    (spit (path/join root directory "skip.janet") "(def skipped true)\n"))
+  (spit (path/join root ".gitignore") "ignored/\n")
+  (spit (path/join root ".hidden.janet") "(def hidden-file true)\n")
+  (spit (path/join root "main.janet") "(def visible true)\n")
+  (def git (os/spawn ["git" "init" "-q" root] :p))
+  (test (os/proc-wait git) 0)
+  (test (map path/basename (index/files root index/default-exclusions))
+        @[".hidden.janet" "main.janet"])
+  (remove-test-tree root))
 
 (deftest "index multiline syntax and resolve module identities"
   (def multiline
