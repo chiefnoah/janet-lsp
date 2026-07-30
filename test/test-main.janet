@@ -388,7 +388,8 @@
   (test (deep= (changed :dirty) @[source-path]) true)
   (def changes
     (index-cache/rebuild-changes cache-path root-uri root index/default-exclusions))
-  (test (keys changes) @[document-uri])
+  (test (length changes) 1)
+  (test (= (first (keys changes)) document-uri) true)
   (test (map |($ :name) (index/definitions {:index changes})) @["hacked-value"])
   (def rebuilt
     (index-cache/rebuild cache-path root-uri root index/default-exclusions))
@@ -447,8 +448,8 @@
   (def previous-push (dyn :push-diagnostics))
   (setdyn :push-diagnostics false)
   (documents/on-open
-    state {"textDocument" {"uri" document-uri :version 1
-                            :text "(def lazy-value 1)\n"}})
+    state {"textDocument" {"uri" document-uri "version" 1
+                            "text" "(def lazy-value 1)\n"}})
   (def document (get-in state [:documents document-uri]))
   (test (document :analysis) nil)
   (test (map |($ :name) (index/definitions workspace)) @["lazy-value"])
