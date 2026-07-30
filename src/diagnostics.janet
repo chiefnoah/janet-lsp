@@ -31,7 +31,7 @@
                        (lint/analyze content env))
         call-results (if (> (length content) eval/max-source-bytes)
                        @[]
-                       (signatures/diagnostics content))
+                       (signatures/diagnostics content record))
         static-results (if (> (length content) eval/max-source-bytes)
                          @[]
                          (static-diagnostics/analyze content tree record workspace env

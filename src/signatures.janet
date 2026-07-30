@@ -163,41 +163,75 @@
                       form)))
       result)))
 
-(defn- matching-definition? [source form signature]
-  (when-let [call-range (token-range source form 0)
-             resolved (parser/definition-at (call-range :start)
-                                            source (signature :name))]
-    (deep= (get-in resolved [:range :start])
-           (get-in signature [:definition-range :start]))))
+(defn- matching-definition? [source form signature &opt call]
+  (if call
+    (and (signature :identity) (call :identity)
+         (= (signature :identity) (call :identity)))
+    (when-let [call-range (token-range source form 0)
+               resolved (parser/definition-at (call-range :start)
+                                              source (signature :name))]
+      (deep= (get-in resolved [:range :start])
+             (get-in signature [:definition-range :start])))))
 
 (varfn validate-node [])
 
-(varfn validate-node [source node signatures diagnostics]
+(varfn validate-node [source node signatures diagnostics &opt calls-by-position]
   (cond
     (tuple? node)
     (unless (and (not (empty? node)) (has-value? ['quote 'quasiquote] (node 0)))
       (when (and (not (empty? node)) (symbol? (node 0)))
-        (when-let [matches (get signatures (string (node 0)))]
+        (def name (string (node 0)))
+        (def [line column] (tuple/sourcemap node))
+        (def call
+          (and calls-by-position
+               (get calls-by-position
+                    (string name ":" (max 0 (dec line)) ":"
+                            (max 0 column)))))
+        (when-let [matches (get signatures name)]
           (when (and (= 1 (length matches))
-                     (matching-definition? source node (matches 0)))
+                     (matching-definition? source node (matches 0) call))
             (array/concat diagnostics (validate-call source node (matches 0))))))
-      (each child node (validate-node source child signatures diagnostics)))
-    (indexed? node) (each child node (validate-node source child signatures diagnostics))
+      (each child node
+        (validate-node source child signatures diagnostics calls-by-position)))
+    (indexed? node)
+    (each child node
+      (validate-node source child signatures diagnostics calls-by-position))
     (dictionary? node)
-    (each child (values node) (validate-node source child signatures diagnostics)))
+    (each child (values node)
+      (validate-node source child signatures diagnostics calls-by-position)))
   diagnostics)
 
-(defn diagnostics [source]
+(defn diagnostics [source &opt record]
   (try
     (let [by-name @{}
           forms (parse-forms source)
-          diagnostics @[]]
+          diagnostics @[]
+          definitions-by-name @{}
+          calls-by-position (and record @{})]
+      (each definition (get record :definitions @[])
+        (unless (get definitions-by-name (definition :name))
+          (put definitions-by-name (definition :name) @[]))
+        (array/push (get definitions-by-name (definition :name)) definition))
+      (each call (get record :calls @[])
+        (put calls-by-position
+             (string (call :name) ":" (get-in call [:range :start :line]) ":"
+                     (get-in call [:range :start :character]))
+             call))
       (each form forms
         (when-let [signature (make-signature source form)]
-          (unless (get by-name (signature :name))
-            (put by-name (signature :name) @[]))
-          (array/push (get by-name (signature :name)) signature)))
-      (each form forms (validate-node source form by-name diagnostics))
+          (def definition
+            (first
+              (filter |(deep= ($ :selection-range) (signature :definition-range))
+                      (get definitions-by-name (signature :name) @[]))))
+          (def resolved
+            (if definition
+              (merge signature {:identity (definition :identity)})
+              signature))
+          (unless (get by-name (resolved :name))
+            (put by-name (resolved :name) @[]))
+          (array/push (get by-name (resolved :name)) resolved)))
+      (each form forms
+        (validate-node source form by-name diagnostics calls-by-position))
       diagnostics)
     ([_] @[])))
 

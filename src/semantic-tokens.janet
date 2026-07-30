@@ -23,8 +23,11 @@
   [(get-in range [:start :line]) (get-in range [:start :character])
    (get-in range [:end :line]) (get-in range [:end :character])])
 
-(defn- same-range? [left right]
-  (deep= (range-key left) (range-key right)))
+(defn- range-id [range]
+  (string (get-in range [:start :line]) ":"
+          (get-in range [:start :character]) ":"
+          (get-in range [:end :line]) ":"
+          (get-in range [:end :character])))
 
 (defn- in-range? [position range]
   (let [line (position :line) character (position :character)
@@ -40,18 +43,23 @@
     (= 12 (definition :kind)) 2
     4))
 
-(defn- identity-definition [workspace definitions identity]
-  (or (first (filter |(= identity ($ :identity)) definitions))
-      (and workspace
-           (first (filter |(= identity ($ :identity))
-                          (index/definitions workspace))))))
-
 (defn records [record env content &opt workspace]
   (def definitions (record :definitions))
   (def found @[])
-  (def occupied @[])
+  (def occupied @{})
+  (def found-ranges @{})
   (def parameter-identities @{})
   (def local-first @{})
+  (def references-by-range @{})
+  (def definitions-by-identity @{})
+  (def line-starts (lookup/line-starts content))
+
+  (each reference (record :references)
+    (put references-by-range (range-id (reference :range)) reference))
+  (each definition (if workspace (index/definitions workspace) definitions)
+    (put definitions-by-identity (definition :identity) definition))
+  (each definition definitions
+    (put definitions-by-identity (definition :identity) definition))
 
   (each definition definitions
     (def modifiers
@@ -59,26 +67,25 @@
     (array/push found {:range (definition :selection-range)
                        :type (definition-type definition)
                        :modifiers modifiers})
-    (array/push occupied (definition :selection-range))
+    (put occupied (range-id (definition :selection-range)) true)
+    (put found-ranges (range-id (definition :selection-range)) true)
     (each parameter (definition :children)
       (when-let [reference
-                 (first (filter |(same-range? (parameter :selection-range)
-                                             ($ :range))
-                                (record :references)))]
+                 (get references-by-range (range-id (parameter :selection-range)))]
         (when (reference :identity)
           (put parameter-identities (reference :identity) true)
           (put local-first (reference :identity) true)))
       (array/push found {:range (parameter :selection-range)
                          :type 5 :modifiers 1})
-      (array/push occupied (parameter :selection-range))))
+      (put occupied (range-id (parameter :selection-range)) true)
+      (put found-ranges (range-id (parameter :selection-range)) true)))
 
   (each reference (record :references)
     (def range (reference :range))
-    (unless (any? (map |(same-range? range $) occupied))
+    (unless (get occupied (range-id range))
       (def name (reference :name))
       (def identity (reference :identity))
-      (def target (and identity
-                       (identity-definition workspace definitions identity)))
+      (def target (and identity (get definitions-by-identity identity)))
       (def local? (= :local (reference :identity-kind)))
       (def parameter? (and local? (get parameter-identities identity)))
       (def declaration? (and local? (not (get local-first identity))))
@@ -108,25 +115,25 @@
            4)
          :modifiers
          (cond
-           declaration? 1
-           (and binding (nil? target) (not local?)) 8
-           0)})))
+            declaration? 1
+            (and binding (nil? target) (not local?)) 8
+            0)})
+      (put found-ranges (range-id range) true)))
 
   (def scanned (document-features/scan content))
   (each token (scanned :tokens)
     (when (has-value? [:string :number] (token :kind))
-      (def range {:start (lookup/from-index (token :literal-start) content)
-                  :end (lookup/from-index (token :literal-end) content)})
-      (unless (any? (map |(same-range? range ($ :range)) found))
+      (def range {:start (lookup/from-index (token :literal-start) content line-starts)
+                  :end (lookup/from-index (token :literal-end) content line-starts)})
+      (unless (get found-ranges (range-id range))
         (array/push found {:range range
                            :type (if (= :string (token :kind)) 7 8)
-                           :modifiers 0}))))
+                           :modifiers 0})
+        (put found-ranges (range-id range) true))))
   (each span (scanned :comments)
-    (def end (span :end))
-    (def prefix (string/slice content 0 end))
     (array/push found
-                {:range {:start (lookup/from-index (span :start) content)
-                         :end (lookup/from-index (length prefix) prefix)}
+                {:range {:start (lookup/from-index (span :start) content line-starts)
+                         :end (lookup/from-index (span :end) content line-starts)}
                  :type 9 :modifiers 0}))
 
   (def sorted (sort-by |(range-key ($ :range)) found))

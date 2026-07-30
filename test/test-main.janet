@@ -153,6 +153,20 @@
   (index/remove workspace "file:///workspace/main.janet")
   (test (index/definitions workspace "value") @[]))
 
+(deftest "keep unchanged cached records when installing document analysis"
+  (def document-uri "file:///workspace/main.janet")
+  (def source "(def cached-value 1)\n")
+  (def cached (index/analyze document-uri source))
+  (def workspace @{:index @{document-uri cached} :index-generation 3})
+  (analysis/replace-record workspace document-uri (index/analyze document-uri source))
+  (test (= (get-in workspace [:index document-uri]) cached) true)
+  (test (workspace :index-generation) 3)
+  (array/push (cached :definitions)
+              {:name "generated" :generated true :uri document-uri})
+  (analysis/replace-record workspace document-uri (index/analyze document-uri source))
+  (test (= (get-in workspace [:index document-uri]) cached) false)
+  (test (index/definitions workspace "generated") @[]))
+
 (deftest "honor git ignores and hidden directories during source discovery"
   (def root (platform/temp-path (string "janet-lsp-source-files-" (os/getpid))))
   (when (os/stat root) (remove-test-tree root))
@@ -695,6 +709,22 @@
           "janet.call.unknown-named-argument"
           "janet.call.duplicate-named-argument"
           "janet.call.odd-named-arguments"])
+  (test (map |($ :code)
+             (signatures/diagnostics
+               source (index/analyze "file:///workspace/main.janet" source)))
+        @["janet.call.missing-arguments"
+          "janet.call.extra-arguments"
+          "janet.call.unknown-named-argument"
+          "janet.call.duplicate-named-argument"
+          "janet.call.odd-named-arguments"])
+  (def quoted-unquote
+    (string "(defn target [x] nil)\n"
+            "(quasiquote (unquote (target)))\n"
+            "(defn caller [target] (target))\n"))
+  (test (signatures/diagnostics
+          quoted-unquote
+          (index/analyze "file:///workspace/quoted.janet" quoted-unquote))
+        @[])
   (def missing
     (first (filter |(= "janet.call.missing-arguments" ($ :code))
                    (signatures/diagnostics source))))

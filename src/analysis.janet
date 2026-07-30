@@ -77,22 +77,33 @@
 
 (defn replace-record [workspace document-uri record]
   (def previous (get-in workspace [:index document-uri]))
-  (if record
-    (index/update-record workspace document-uri record)
-    (index/remove workspace document-uri))
-  (unless (= (get previous :content-hash) (get record :content-hash))
+  (def same-content
+    (and previous record
+         (= (previous :content-hash) (record :content-hash))))
+  (def previous-generated
+    (and previous (filter |($ :generated) (previous :definitions))))
+  (def generated
+    (and record (filter |($ :generated) (record :definitions))))
+  (unless (and same-content (deep= previous-generated generated))
+    (if record
+      (index/update-record workspace document-uri record)
+      (index/remove workspace document-uri)))
+  (unless same-content
     (put workspace :index-generation
          (inc (or (workspace :index-generation) 0))))
   (or (workspace :index-generation) 0))
 
 (defn install [document workspace snapshot]
   (replace-record workspace (document :uri) (snapshot :index))
+  (def linked-record (get-in workspace [:index (document :uri)]))
   (def installed
     (merge snapshot
-            {:index-generation (or (workspace :index-generation) 0)
+            {:index linked-record
+             :references (linked-record :references)
+             :index-generation (or (workspace :index-generation) 0)
              :semantic (semantic-tokens/records
-                         (snapshot :index) (snapshot :eval-env)
-                         (snapshot :source) workspace)
+                          linked-record (snapshot :eval-env)
+                          (snapshot :source) workspace)
             :diagnostic-result-id
             (diagnostic-result-id workspace (snapshot :key)
                                   (snapshot :diagnostics))}))
