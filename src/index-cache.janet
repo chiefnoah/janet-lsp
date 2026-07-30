@@ -3,7 +3,8 @@
 (import ./uri)
 (import spork/path)
 
-(def format-version 5)
+(def format-version 6)
+(def cache-magic "janet-lsp-cache\0")
 
 (defn- ensure-directory [directory]
   (unless (os/stat directory)
@@ -141,9 +142,24 @@
 (defn- read-envelope [cache-path root-uri exclusions]
   (when (os/stat cache-path)
     (try
-      (let [parsed (parse (slurp cache-path))]
+      (let [content (slurp cache-path)
+            parsed (and (string/has-prefix? cache-magic content)
+                        (unmarshal (string/slice content (length cache-magic))))]
         (and (envelope? parsed root-uri exclusions) parsed))
       ([_] nil))))
+
+(defn- disk-copy [disk-index]
+  (def copy @{})
+  (eachp [document-uri record] disk-index
+    (put copy document-uri
+         (merge record
+                {:references
+                 (map |(if (= :import ($ :identity-kind))
+                         (merge $ {:identity nil :identity-kind nil}) $)
+                      (record :references))
+                 # Call targets are reconstructed from references and imports.
+                 :calls (map |(merge $ {:identity nil}) (record :calls))})))
+  copy)
 
 (defn load [cache-path root-uri root exclusions]
   (var envelope (read-envelope cache-path root-uri exclusions))
@@ -189,8 +205,7 @@
 
 (defn write [cache-path root-uri exclusions disk-index]
   (def entries @{})
-  (def copy (parse (string/format "%j" disk-index)))
-  (index/relink @{:index copy})
+  (def copy (disk-copy disk-index))
   (eachp [document-uri record] copy
     (when-let [filepath (uri/file-uri->path document-uri)
                found (sample filepath)]
@@ -211,7 +226,7 @@
   (def temporary (string cache-path "." (os/getpid) ".tmp"))
   (try
     (do
-      (spit temporary (string/format "%j" envelope))
+      (spit temporary (string cache-magic (marshal envelope)))
       (os/rename temporary cache-path)
       complete)
     ([err]

@@ -361,12 +361,14 @@
         @["cached-value"])
 
   (def document-uri (uri/path->file-uri source-path))
-  (def forged (parse (slurp cache-path)))
+  (def forged
+    (unmarshal (string/slice (slurp cache-path)
+                             (length index-cache/cache-magic))))
   (def forged-entry (get-in forged [:entries document-uri]))
   (put (forged :entries) document-uri
        (merge forged-entry
               {:record (merge (forged-entry :record) {:content-hash "forged"})}))
-  (spit cache-path (string/format "%j" forged))
+  (spit cache-path (string index-cache/cache-magic (marshal forged)))
   (def rejected
     (index-cache/load cache-path root-uri root index/default-exclusions))
   (test (rejected :complete) false)
