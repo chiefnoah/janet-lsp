@@ -807,9 +807,10 @@
     (each reference (record :references)
       (when-let [identity (get replacements (reference :identity))]
         (put reference :identity identity)))
-    (each callable (record :callables)
+    (eachp [callable-index callable] (record :callables)
       (when-let [identity (get replacements (callable :identity))]
-        (put callable :identity identity)))
+        (put (record :callables) callable-index
+             (merge callable {:identity identity}))))
     (each call (record :calls)
       (when-let [identity (get replacements (call :identity))]
         (put call :identity identity))

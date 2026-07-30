@@ -2272,7 +2272,8 @@
   (def root-uri (uri/path->file-uri root))
   (def module-uri (uri/path->file-uri module-path))
   (def main-uri (uri/path->file-uri main-path))
-  (def module-source "(defn run [value] value)\n")
+  (def module-source
+    "(defn run [value] value)\n(defn later [value] value)\n")
   (def main-source "(import ./module :as module)\n(module/run 1)\n")
   (spit module-path module-source)
   (spit main-path main-source)
@@ -2290,7 +2291,8 @@
 
   (change-text-document
     cursor module-uri
-    "(defn run \"Live documentation\" [value] value)\n"
+    (string "(defn run\n  \"Live documentation\"\n  [value] value)\n"
+            "(defn later [value] value)\n")
     2)
   (def unchanged
     (request cursor 335 "textDocument/diagnostic"
@@ -2319,8 +2321,9 @@
         false)
   (change-text-document
     cursor module-uri
-    (string "(defn run \"Updated documentation\" "
-            "@{:janet-lsp/returns \"number\"} [value] value)\n")
+    (string "(defn run\n  \"Updated documentation\"\n  "
+            "@{:janet-lsp/returns \"number\"}\n  [value] value)\n"
+            "(defn later [value] value)\n")
     3)
   (def updated-hover
     (request cursor 339 "textDocument/hover"
