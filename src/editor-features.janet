@@ -2,6 +2,7 @@
 (import ./analysis)
 (import ./completion)
 (import ./eval)
+(import ./index)
 (import ./logging)
 (import ./lookup)
 (import ./position)
@@ -52,7 +53,20 @@
         content (document :content)
         location (server-utils/request-byte-position state params content)
         word (lookup/word-at location content)
-        hover-text (doc/my-doc* (symbol (word :word)) (document :eval-env))
+        occurrence
+        (first
+          (filter |(and (= (word :word) ($ :name))
+                        (= (location :line) (get-in $ [:range :start :line]))
+                        (= (first (word :range))
+                           (get-in $ [:range :start :character])))
+                  (get-in document [:analysis :index :references] @[])))
+        workspace (server-utils/document-workspace state document)
+        definition (and occurrence (occurrence :identity)
+                        (index/definition-by-identity workspace
+                                                      (occurrence :identity)))
+        hover-text (if definition
+                     (doc/make-definition-entry definition)
+                     (doc/my-doc* (symbol (word :word)) (document :eval-env)))
         byte-range {:start {:line (location :line)
                             :character (first (word :range))}
                     :end {:line (location :line)

@@ -2265,6 +2265,77 @@
   (when (os/stat cache-path) (os/rm cache-path))
   (remove-tree root))
 
+(deftest "update indexed documentation without invalidating symbol identities"
+  (def root (temp-directory "janet-lsp-live-docstrings"))
+  (def module-path (path/join root "module.janet"))
+  (def main-path (path/join root "main.janet"))
+  (def root-uri (uri/path->file-uri root))
+  (def module-uri (uri/path->file-uri module-path))
+  (def main-uri (uri/path->file-uri main-path))
+  (def module-source "(defn run [value] value)\n")
+  (def main-source "(import ./module :as module)\n(module/run 1)\n")
+  (spit module-path module-source)
+  (spit main-path main-source)
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 333 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document cursor module-uri module-source)
+  (open-text-document cursor main-uri main-source)
+  (def initial-diagnostics
+    (request cursor 334 "textDocument/diagnostic"
+             {:textDocument {:uri main-uri}}))
+
+  (change-text-document
+    cursor module-uri
+    "(defn run \"Live documentation\" [value] value)\n"
+    2)
+  (def unchanged
+    (request cursor 335 "textDocument/diagnostic"
+             {:textDocument {:uri main-uri}
+              :previousResultId (get-in initial-diagnostics [:result :resultId])}))
+  (test (get-in unchanged [:result :kind]) "unchanged")
+
+  (def definition
+    (request cursor 336 "textDocument/definition"
+             {:textDocument {:uri main-uri}
+              :position {:line 1 :character 8}}))
+  (test (= module-uri (get-in definition [:result :uri])) true)
+  (def references
+    (request cursor 337 "textDocument/references"
+             {:textDocument {:uri main-uri}
+              :position {:line 1 :character 8}
+              :context {:includeDeclaration true}}))
+  (test (has-value? (map |($ :uri) (get-in references [:result])) module-uri) true)
+  (test (has-value? (map |($ :uri) (get-in references [:result])) main-uri) true)
+  (def hover
+    (request cursor 338 "textDocument/hover"
+             {:textDocument {:uri main-uri}
+              :position {:line 1 :character 8}}))
+  (test (nil? (string/find "Live documentation"
+                           (get-in hover [:result :contents :value])))
+        false)
+  (change-text-document
+    cursor module-uri
+    (string "(defn run \"Updated documentation\" "
+            "@{:janet-lsp/returns \"number\"} [value] value)\n")
+    3)
+  (def updated-hover
+    (request cursor 339 "textDocument/hover"
+             {:textDocument {:uri main-uri}
+              :position {:line 1 :character 8}}))
+  (test (nil? (string/find "Updated documentation"
+                           (get-in updated-hover [:result :contents :value])))
+        false)
+  (test (nil? (string/find "Returns: `number`"
+                           (get-in updated-hover [:result :contents :value])))
+        false)
+  (exit-lsp cursor)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
+
 (deftest: with-process "push diagnostics report zero-based parse positions" [cursor]
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri document-uri :languageId "janet"

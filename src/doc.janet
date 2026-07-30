@@ -34,6 +34,32 @@
   (string "special form\n\n(" symbol " ...)\n\n"
           "See https://janet-lang.org/docs/specials.html"))
 
+(defn make-definition-entry [definition]
+  (def form (definition :form))
+  (def kind
+    (cond
+      (string/has-prefix? "defmacro" form) "macro"
+      (has-value? ["defn" "defn-" "varfn" "varfn-"] form) "function"
+      "definition"))
+  (def parameters (map |($ :name) (get definition :children @[])))
+  (def signature
+    (when (not (empty? parameters))
+      (string "```janet\n(" (definition :name) " ["
+              (string/join parameters " ") "])\n```\n\n")))
+  (def metadata @[])
+  (when-let [target (get-in definition [:type-target :name])]
+    (array/push metadata (string "Type: `" target "`")))
+  (when-let [target (definition :return-target)]
+    (array/push metadata (string "Returns: `" target "`")))
+  (each target (get definition :implementation-targets @[])
+    (array/push metadata (string "Implements: `" (target :name) "`")))
+  (string kind "  \n" (definition :uri) " on line "
+          (inc (get-in definition [:selection-range :start :line])) "\n\n"
+          signature
+          (or (definition :doc) "No documentation found.\n")
+          (when (not (empty? metadata))
+            (string "\n\n" (string/join metadata "  \n")))))
+
 (defn get-signature [symbol env]
   (assert env "get-signature: env is nil")
   (if-let [documentation (get-in env [symbol :doc])]

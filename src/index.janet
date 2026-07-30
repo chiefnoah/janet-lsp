@@ -107,6 +107,7 @@
 
 (defn- definition-metadata [form source form-head target-range]
   (def parsed-metadata (parsed-definition-metadata form source form-head))
+  (def documentation (some |(and (string? $) $) parsed-metadata))
   (def type-name
     (some |(and (dictionary? $) (get $ :janet-lsp/type-definition))
           parsed-metadata))
@@ -122,7 +123,8 @@
       (and (indexed? implementation-value) (all string? implementation-value))
       (array ;implementation-value)
       @[]))
-  {:type-target (when (and (string? type-name) (not (empty? type-name)))
+  {:doc documentation
+   :type-target (when (and (string? type-name) (not (empty? type-name)))
                    {:name type-name :range target-range})
    :return-target (when (and (string? return-value) (not (empty? return-value)))
                     return-value)
@@ -153,8 +155,9 @@
                        (get-in selection-range [:start :line]) ":"
                        (get-in selection-range [:start :character]))
      :kind kind
-     :form form-head
-     :private (private-definition? form source form-head)
+      :form form-head
+      :doc (metadata :doc)
+      :private (private-definition? form source form-head)
       :type-target (metadata :type-target)
       :return-target (metadata :return-target)
      :implementation-targets (metadata :implementation-targets)
