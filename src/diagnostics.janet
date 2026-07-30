@@ -4,6 +4,7 @@
 (import ./logging)
 (import ./lint)
 (import ./position)
+(import ./request-control)
 (import ./signatures)
 (import ./static-diagnostics)
 
@@ -18,7 +19,7 @@
     (string/has-prefix? "runtime error:" message) "janet.runtime"
     "janet.analysis"))
 
-(defn run [filepath content encoding workspace tree record &opt version]
+(defn run [filepath content encoding workspace tree record &opt version state request-id]
   (let [items @[]
         [compiler-results env]
         (eval/eval-buffer content
@@ -26,12 +27,15 @@
                           {:trusted (workspace :trusted)
                            :base-env (workspace :env)
                            :unique-paths (workspace :unique-paths)})
+        _ (when state (request-control/checkpoint state request-id))
         lint-results (if (> (length content) eval/max-source-bytes)
-                       @[]
-                       (lint/analyze content env))
+                        @[]
+                        (lint/analyze content env))
+        _ (when state (request-control/checkpoint state request-id))
         call-results (if (> (length content) eval/max-source-bytes)
-                       @[]
-                       (signatures/diagnostics content record))
+                        @[]
+                        (signatures/diagnostics content record))
+        _ (when state (request-control/checkpoint state request-id))
         static-results (if (> (length content) eval/max-source-bytes)
                          @[]
                          (static-diagnostics/analyze content tree record workspace env

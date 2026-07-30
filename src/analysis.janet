@@ -1,6 +1,8 @@
 (import ./diagnostics)
+(import ./eval)
 (import ./index)
 (import ./parser)
+(import ./request-control)
 (import ./semantic-tokens)
 (import ./signatures)
 
@@ -14,14 +16,24 @@
           (or (workspace :index-generation) 0) ":" snapshot-key ":"
           (index/content-hash (string/format "%j" items))))
 
-(defn build [document workspace encoding]
+(defn build [document workspace encoding &opt state request-id]
   (let [content (document :content)
         version (document :version)
-        syntax-tree (try (parser/syntax-tree content) ([_] {:tag :top :value @[]}))
-        record (index/analyze (document :uri) content syntax-tree)
+        oversized (> (length content) eval/max-source-bytes)
+        _ (when state (request-control/checkpoint state request-id))
+        syntax-tree (if oversized
+                      {:tag :top :value @[]}
+                      (try (parser/syntax-tree content)
+                        ([_] {:tag :top :value @[]})))
+        _ (when state (request-control/checkpoint state request-id))
+        raw-record (index/analyze (document :uri) (if oversized "" content) syntax-tree)
+        record (if oversized
+                 (merge raw-record {:content-hash (index/content-hash content)})
+                 raw-record)
+        _ (when state (request-control/checkpoint state request-id))
         [items env]
         (diagnostics/run (document :path) content encoding workspace syntax-tree record
-                         version)]
+                         version state request-id)]
     (index/add-generated-to-record record (document :uri) (document :path) env)
     {:key (key version content)
      :version version
@@ -33,12 +45,11 @@
      :index-generation (or (workspace :index-generation) 0)
      :diagnostic-result-id (diagnostic-result-id workspace (key version content) items)
      :syntax-tree syntax-tree
-     :signatures (signatures/all content)
+      :signatures (if oversized @[] (signatures/all content))
      :diagnostics items
      :eval-env env
      :index record
-     :references (record :references)
-      :semantic (semantic-tokens/records record env content)}))
+      :references (record :references)}))
 
 (defn current [document workspace]
   (def snapshot (document :analysis))
@@ -103,7 +114,7 @@
          (inc (or (workspace :index-generation) 0))))
   (or (workspace :index-generation) 0))
 
-(defn install [document workspace snapshot]
+(defn install [document workspace snapshot &opt state request-id]
   (replace-record workspace (document :uri) (snapshot :index))
   (def linked-record (get-in workspace [:index (document :uri)]))
   (def installed
@@ -111,14 +122,17 @@
             {:index linked-record
              :references (linked-record :references)
              :index-generation (or (workspace :index-generation) 0)
-             :semantic (semantic-tokens/records
-                          linked-record (snapshot :eval-env)
-                          (snapshot :source) workspace)
+              :semantic (if (> (length (snapshot :source)) eval/max-source-bytes)
+                          @[]
+                          (semantic-tokens/records
+                            linked-record (snapshot :eval-env)
+                            (snapshot :source) workspace state request-id))
             :diagnostic-result-id
             (diagnostic-result-id workspace (snapshot :key)
                                   (snapshot :diagnostics))}))
   (store document installed)
   installed)
 
-(defn refresh [document workspace encoding]
-  (install document workspace (build document workspace encoding)))
+(defn refresh [document workspace encoding &opt state request-id]
+  (install document workspace (build document workspace encoding state request-id)
+           state request-id))

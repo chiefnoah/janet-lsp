@@ -61,19 +61,19 @@
                                  (string/slice updated end-index))))))))))
       (if valid updated nil))))
 
-(defn- refresh [state document workspace]
-  (analysis/refresh document workspace (state :position-encoding)))
+(defn- refresh [state document workspace &opt request-id]
+  (analysis/refresh document workspace (state :position-encoding) state request-id))
 
-(defn refresh-pending [state params]
+(defn refresh-pending [state params &opt request-id]
   (when-let [document (server-utils/document state params)]
     (def workspace (server-utils/document-workspace state document))
     (each candidate (values (state :documents))
       (when (and (candidate :analysis-pending)
                  (= workspace (server-utils/document-workspace state candidate)))
-        (refresh state candidate workspace)
+        (refresh state candidate workspace request-id)
         (put candidate :analysis-pending nil)))
     (unless (analysis/current document workspace)
-      (refresh state document workspace))
+      (refresh state document workspace request-id))
     (put document :analysis-pending nil))
   state)
 
@@ -178,7 +178,7 @@
       (if-let [document (server-utils/document state params)]
     (let [workspace (server-utils/document-workspace state document)
           snapshot (or (analysis/current document workspace)
-                       (refresh state document workspace))
+                       (refresh state document workspace request-id))
           result-id (snapshot :diagnostic-result-id)
           report (if (= result-id (get params "previousResultId"))
                    {:kind "unchanged" :resultId result-id}
@@ -201,18 +201,19 @@
     (put found document-uri true))
   (sort (keys found)))
 
-(defn- workspace-snapshot [state document-uri]
+(defn- workspace-snapshot [state document-uri request-id]
   (if-let [document (get (state :documents) document-uri)]
     (let [workspace (server-utils/document-workspace state document)]
       [(or (analysis/current document workspace)
-           (refresh state document workspace))
+            (refresh state document workspace request-id))
        (document :version)])
     (when-let [content (server-utils/content state document-uri)
                filepath (uri/file-uri->path document-uri)]
       (let [workspace (server-utils/workspace-for-path state filepath)
             restricted (merge workspace {:trusted false})
             document {:uri document-uri :path filepath :content content :version nil}]
-        [(analysis/build document restricted (state :position-encoding)) :null]))))
+        [(analysis/build document restricted (state :position-encoding)
+                         state request-id) :null]))))
 
 (defn- workspace-diagnostic [state params request-id]
   (def previous @{})
@@ -223,7 +224,7 @@
   (def reported @{})
   (each document-uri (workspace-document-uris state)
     (request-control/checkpoint state request-id)
-    (when-let [[snapshot version] (workspace-snapshot state document-uri)]
+    (when-let [[snapshot version] (workspace-snapshot state document-uri request-id)]
       (put reported document-uri true)
       (def result-id (snapshot :diagnostic-result-id))
       (array/push

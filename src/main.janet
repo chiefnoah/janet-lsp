@@ -273,12 +273,8 @@
        (logging/err (string/format "Could not refresh workspace indexes: %m" err)
                     [:index])
        (debug/stacktrace fiber err ""))))
-  (when (get open-document-methods method)
-    (documents/refresh-pending state (get message "params")))
-  (when (and method (not= "textDocument/didChange" method)
-             (not= "janet/internal/analyzeDocument" method))
-    (workspace/refresh-links state))
-  (cond
+  (def result
+    (cond
     (rpc/response? message)
     (workspace/handle-client-response message state)
 
@@ -298,9 +294,22 @@
       (do (write-error id code error-message data) state)
       nil
       (emit-handler-result
-        (try (handle-message message state)
-          ([err fiber] [:error state err fiber]))
+        (try
+          (do
+            (when (get open-document-methods method)
+              (documents/refresh-pending state (get message "params") id))
+            (when (and method (not= "textDocument/didChange" method)
+                       (not= "janet/internal/analyzeDocument" method))
+              (workspace/refresh-links state))
+            (handle-message message state))
+          ([err fiber]
+            (if (= :request-cancelled err)
+              [:rpc-error state -32800 "Request cancelled" nil]
+              [:error state err fiber])))
         id notification?))))
+  (unless notification?
+    (put (state :cancelled-requests) id nil))
+  result)
 
 (defn- next-state [current candidate]
   (if (dictionary? candidate)

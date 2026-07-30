@@ -1,6 +1,7 @@
 (import ./logging)
 
 (def max-source-bytes 1048576)
+(def max-analysis-seconds 0.5)
 
 (varfn is-safe-def :private [])
 
@@ -102,6 +103,7 @@
   (def base-env (options :base-env))
   (def unique-paths (options :unique-paths))
   (def source-limit (or (options :max-source-bytes) max-source-bytes))
+  (def time-limit (or (options :max-analysis-seconds) max-analysis-seconds))
   (if (> (length str) source-limit)
     [[{:message (string/format "analysis limit exceeded: source is larger than %d bytes"
                                source-limit)
@@ -146,12 +148,27 @@
                             :evaluator flycheck-evaluator
                             :fiber-flags :i
                             :source filename})
-           ([err fib]
-             (array/push returnval {:message (string/format "runtime error: %s" err)
-                                    :location (runtime-location fib)
-                                    :severity 1})))
+            ([err fib]
+              (array/push returnval {:message
+                                     (if (= "deadline expired" err)
+                                       (string/format
+                                         "analysis limit exceeded: evaluation exceeded %.3f seconds"
+                                         time-limit)
+                                       (string/format "runtime error: %s" err))
+                                     :location (runtime-location fib)
+                                     :severity 1})))
          returnval) :e fresh-env))
   (fiber/setmaxstack eval-fiber 2048)
-  (def eval-fiber-return (resume eval-fiber))
+  (def result (ev/chan 1))
+  (def evaluation
+    (ev/go
+      (fn []
+        (ev/give result
+                 (try (resume eval-fiber)
+                   ([err] [{:message (string "analysis limit exceeded: " err)
+                            :location [1 1]
+                            :severity 1}]))))))
+  (ev/deadline time-limit evaluation evaluation true)
+  (def eval-fiber-return (ev/take result))
   (logging/dbg (string/format "`eval-buffer` is returning: %m" eval-fiber-return) [:evaluation])
   [eval-fiber-return fresh-env]))))

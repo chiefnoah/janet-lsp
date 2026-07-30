@@ -19,15 +19,17 @@
 (varfn definitions [])
 
 (defn content-hash [content]
-  (def offset (int/u64 "14695981039346656037"))
-  (def prime (int/u64 "1099511628211"))
-  (var fnv-1a offset)
-  (var fnv-1 offset)
-  (each byte (string/bytes content)
-    (def value (int/u64 byte))
-    (set fnv-1a (* (bxor fnv-1a value) prime))
-    (set fnv-1 (bxor (* fnv-1 prime) value)))
-  (string fnv-1a "-" fnv-1))
+  (if (> (length content) 262144)
+    (string "large:" (length content) ":" (hash content))
+    (let [offset (int/u64 "14695981039346656037")
+          prime (int/u64 "1099511628211")]
+      (var fnv-1a offset)
+      (var fnv-1 offset)
+      (each byte (string/bytes content)
+        (def value (int/u64 byte))
+        (set fnv-1a (* (bxor fnv-1a value) prime))
+        (set fnv-1 (bxor (* fnv-1 prime) value)))
+      (string fnv-1a "-" fnv-1))))
 
 (defn- node-range [node source line-starts]
   {:start (lookup/from-index (node :index) source line-starts)

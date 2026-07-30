@@ -43,7 +43,7 @@
     (= 12 (definition :kind)) 2
     4))
 
-(defn records [record env content &opt workspace]
+(defn records [record env content &opt workspace state request-id]
   (def definitions (record :definitions))
   (def found @[])
   (def occupied @{})
@@ -54,11 +54,18 @@
   (def definitions-by-identity @{})
   (def line-starts (lookup/line-starts content))
 
+  (var work 0)
   (each reference (record :references)
+    (when (and state (= 0 (% work 256)))
+      (request-control/checkpoint state request-id))
+    (+= work 1)
     (put references-by-range (range-id (reference :range)) reference))
   (each definition (if workspace (index/definitions workspace) definitions)
     (put definitions-by-identity (definition :identity) definition))
   (each definition definitions
+    (when (and state (= 0 (% work 256)))
+      (request-control/checkpoint state request-id))
+    (+= work 1)
     (put definitions-by-identity (definition :identity) definition))
 
   (each definition definitions
@@ -81,6 +88,9 @@
       (put found-ranges (range-id (parameter :selection-range)) true)))
 
   (each reference (record :references)
+    (when (and state (= 0 (% work 256)))
+      (request-control/checkpoint state request-id))
+    (+= work 1)
     (def range (reference :range))
     (unless (get occupied (range-id range))
       (def name (reference :name))

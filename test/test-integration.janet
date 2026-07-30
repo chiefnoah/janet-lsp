@@ -1148,6 +1148,7 @@
   (def cancelled
     (request cursor 246 "callHierarchy/incomingCalls" {:item prepared-target}))
   (test (get-in cancelled [:error :code]) -32800)
+  (test (get-in (request cursor 246 "janet/serverInfo") [:id]) 246)
   (exit-lsp cursor)
   (remove-tree base))
 
@@ -2420,6 +2421,28 @@
                             (get-in bounded-report [:result :items 0 :message]))
         true)
   (test (length (get-in bounded-report [:result :items])) 1)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 4}
+           :contentChanges
+           [{:text "(defn spin :flycheck [] (while true nil))\n(spin)\n"}]})
+  (def loop-report
+    (request cursor 73 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (string/has-prefix? "analysis limit exceeded:"
+                            (get-in loop-report [:result :items 0 :message]))
+        true)
+
+  (notify cursor "textDocument/didChange"
+          {:textDocument {:uri document-uri :version 5}
+           :contentChanges
+           [{:text "(defmacro spin [] (while true nil))\n(spin)\n"}]})
+  (def macro-report
+    (request cursor 74 "textDocument/diagnostic"
+             {:textDocument {:uri document-uri}}))
+  (test (string/has-prefix? "analysis limit exceeded:"
+                            (get-in macro-report [:result :items 0 :message]))
+        true)
   (test (get-in (request cursor 69 "janet/serverInfo") [:id]) 69)
   (exit-lsp cursor))
 
