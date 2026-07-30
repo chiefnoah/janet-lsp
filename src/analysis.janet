@@ -8,6 +8,29 @@
 
 (def max-snapshots 4)
 
+(defn- append-missing [current stable key]
+  (def found @{})
+  (each item current (put found (key item) true))
+  (def merged (array ;current))
+  (each item stable
+    (unless (get found (key item))
+      (array/push merged item)))
+  merged)
+
+(defn- recover-index [record stable]
+  (if stable
+    (merge record
+           {:definitions
+            (append-missing
+              (record :definitions)
+              (filter |($ :top-level) (stable :definitions))
+              |[($ :name) ($ :form)])
+            :imports
+            (append-missing
+              (record :imports) (stable :imports)
+              |[($ :kind) ($ :module) ($ :prefix) ($ :top-level)])})
+    record))
+
 (defn key [version content]
   (string (if (nil? version) "null" version) ":" (index/content-hash content)))
 
@@ -33,8 +56,13 @@
         _ (when state (request-control/checkpoint state request-id))
         [items env]
         (diagnostics/run (document :path) content encoding workspace syntax-tree record
-                         version state request-id)]
-    (index/add-generated-to-record record (document :uri) (document :path) env)
+                         version state request-id)
+        incomplete? (any? (map |(string/has-prefix? "janet.parse" ($ :code))
+                                items))
+        recovered (if incomplete?
+                    (recover-index record (document :stable-index))
+                    record)]
+    (index/add-generated-to-record recovered (document :uri) (document :path) env)
     {:key (key version content)
      :version version
      :content-hash (index/content-hash content)
@@ -43,13 +71,14 @@
      :trusted (workspace :trusted)
      :diagnostic-generation (workspace :diagnostic-generation)
      :index-generation (or (workspace :index-generation) 0)
-     :diagnostic-result-id (diagnostic-result-id workspace (key version content) items)
+      :diagnostic-result-id (diagnostic-result-id workspace (key version content) items)
+      :incomplete incomplete?
      :syntax-tree syntax-tree
       :signatures (if oversized @[] (signatures/all content))
      :diagnostics items
      :eval-env env
-     :index record
-      :references (record :references)}))
+      :index recovered
+      :references (recovered :references)}))
 
 (defn current [document workspace]
   (def snapshot (document :analysis))
@@ -129,7 +158,9 @@
                             (snapshot :source) workspace state request-id))
             :diagnostic-result-id
             (diagnostic-result-id workspace (snapshot :key)
-                                  (snapshot :diagnostics))}))
+                                   (snapshot :diagnostics))}))
+  (unless (snapshot :incomplete)
+    (put document :stable-index linked-record))
   (store document installed)
   installed)
 

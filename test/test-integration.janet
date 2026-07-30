@@ -2170,6 +2170,54 @@
                             (get-in published [:params :diagnostics 0 :message]))
         true))
 
+(deftest "preserve imported definitions while forms are incomplete"
+  (def root (temp-directory "janet-lsp-incomplete-index"))
+  (def module-path (path/join root "module.janet"))
+  (def main-path (path/join root "main.janet"))
+  (def module-uri (uri/path->file-uri module-path))
+  (def main-uri (uri/path->file-uri main-path))
+  (def root-uri (uri/path->file-uri root))
+  (def module-source "(def exported 1)\n")
+  (def main-source
+    "(import ./module :only [exported] :prefix \"\")\nexported\n")
+  (spit module-path module-source)
+  (spit main-path main-source)
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 217 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document cursor module-uri module-source)
+  (open-text-document cursor main-uri main-source)
+
+  (var version 1)
+  (each tail ["(" "\"unterminated" "@\"unterminated" "'"]
+    (+= version 1)
+    (change-text-document cursor module-uri (string module-source tail) version)
+    (def report
+      (request cursor (+ 217 version) "textDocument/diagnostic"
+               {:textDocument {:uri module-uri}}))
+    (test (any? (map |(string/has-prefix? "janet.parse" ($ :code))
+                     (get-in report [:result :items])))
+          true)
+    (def definition
+      (request cursor (+ 227 version) "textDocument/definition"
+               {:textDocument {:uri main-uri}
+                :position {:line 1 :character 3}}))
+    (test (= module-uri (get-in definition [:result :uri])) true))
+
+  (+= version 1)
+  (change-text-document cursor module-uri "(def replacement 2)\n" version)
+  (def removed
+    (request cursor 240 "textDocument/definition"
+             {:textDocument {:uri main-uri}
+              :position {:line 1 :character 3}}))
+  (test (get-in removed [:result]) :null)
+  (exit-lsp cursor)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
+
 (deftest: with-process "report safe unused parameters without workspace trust" [cursor]
   (open-text-document cursor document-uri "(defn run [unused] 1)\n")
   (def published (read-output cursor))
