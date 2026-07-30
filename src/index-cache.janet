@@ -165,13 +165,6 @@
              (record? (entry :record) document-uri))
       (put valid document-uri (entry :record))
       (array/push dirty filepath)))
-  (try
-    (index/relink @{:index valid})
-    ([err]
-      (when (os/stat cache-path) (try (os/rm cache-path) ([_] nil)))
-      (set valid @{})
-      (set dirty (array ;filepaths))
-      (set envelope nil)))
   {:index valid
    :dirty dirty
    :files filepaths
