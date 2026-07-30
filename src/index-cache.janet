@@ -66,7 +66,7 @@
        (or (nil? (definition :type-target))
            (and (dictionary? (definition :type-target))
                 (string? (get-in definition [:type-target :name]))
-                 (range? (get-in definition [:type-target :range]))))
+                (range? (get-in definition [:type-target :range]))))
        (or (nil? (definition :return-target))
            (string? (definition :return-target)))
        (indexed? (definition :implementation-targets))
@@ -196,10 +196,10 @@
       (put valid document-uri (entry :record))
       (array/push dirty filepath)))
   {:index valid
-    :dirty dirty
-    :files filepaths
-    :hashed hashed
-    :complete (and envelope
+   :dirty dirty
+   :files filepaths
+   :hashed hashed
+   :complete (and envelope
                   (empty? dirty)
                   (= (length filepaths) (length (envelope :entries))))})
 

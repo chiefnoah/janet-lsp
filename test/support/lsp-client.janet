@@ -102,8 +102,8 @@
   (def graceful?
     (try
       (do (request cursor 99 "shutdown")
-          (notify cursor "exit")
-          true)
+        (notify cursor "exit")
+        true)
       ([_] false)))
   (unless graceful?
     (try (os/proc-kill (cursor :process) true) ([_] nil)))

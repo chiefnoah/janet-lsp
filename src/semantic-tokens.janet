@@ -125,9 +125,9 @@
            4)
          :modifiers
          (cond
-            declaration? 1
-            (and binding (nil? target) (not local?)) 8
-            0)})
+           declaration? 1
+           (and binding (nil? target) (not local?)) 8
+           0)})
       (put found-ranges (range-id range) true)))
 
   (def scanned (document-features/scan content))

@@ -347,45 +347,45 @@
           (when (and (tuple? form) (not (empty? form)) (= 'break (form 0)))
             (set terminated true))))))
   (set visit (fn visit [form]
-    (when (tuple? form)
-      (def fallback (tuple/sourcemap form))
-      (def head (and (not (empty? form)) (form 0)))
-      (case head
-        'if
-        (when (> (length form) 1)
-          (when-let [condition (literal-condition (form 1))]
-            (warn (form 1) fallback "janet.lint.constant-condition"
-                  (string "condition is always " (if (= :true condition) "true" "false")) 3)
-            (when (and (= :false condition) (> (length form) 2))
-              (warn (form 2) fallback "janet.lint.unreachable-code" "unreachable branch" 2))
-            (when (and (= :true condition) (> (length form) 3))
-              (warn (form 3) fallback "janet.lint.unreachable-code" "unreachable branch" 2)))
-          (each child (tuple/slice form 1) (visit child)))
+               (when (tuple? form)
+                 (def fallback (tuple/sourcemap form))
+                 (def head (and (not (empty? form)) (form 0)))
+                 (case head
+                   'if
+                   (when (> (length form) 1)
+                     (when-let [condition (literal-condition (form 1))]
+                       (warn (form 1) fallback "janet.lint.constant-condition"
+                             (string "condition is always " (if (= :true condition) "true" "false")) 3)
+                       (when (and (= :false condition) (> (length form) 2))
+                         (warn (form 2) fallback "janet.lint.unreachable-code" "unreachable branch" 2))
+                       (when (and (= :true condition) (> (length form) 3))
+                         (warn (form 3) fallback "janet.lint.unreachable-code" "unreachable branch" 2)))
+                     (each child (tuple/slice form 1) (visit child)))
 
-        'while
-        (when (> (length form) 1)
-          (when-let [condition (literal-condition (form 1))]
-            (warn (form 1) fallback "janet.lint.constant-condition"
-                  (string "condition is always " (if (= :true condition) "true" "false")) 3)
-            (when (= :false condition)
-              (each child (tuple/slice form 2)
-                (warn child fallback "janet.lint.unreachable-code" "unreachable loop body" 2))))
-          (each child (tuple/slice form 1) (visit child)))
+                   'while
+                   (when (> (length form) 1)
+                     (when-let [condition (literal-condition (form 1))]
+                       (warn (form 1) fallback "janet.lint.constant-condition"
+                             (string "condition is always " (if (= :true condition) "true" "false")) 3)
+                       (when (= :false condition)
+                         (each child (tuple/slice form 2)
+                           (warn child fallback "janet.lint.unreachable-code" "unreachable loop body" 2))))
+                     (each child (tuple/slice form 1) (visit child)))
 
-        'do (visit-sequence (tuple/slice form 1) fallback)
+                   'do (visit-sequence (tuple/slice form 1) fallback)
 
-        'quote nil
-        'quasiquote nil
+                   'quote nil
+                   'quasiquote nil
 
-        (if (has-value? ['defn 'defn- 'defmacro 'defmacro- 'varfn 'varfn- 'fn] head)
-          (when-let [parameters
-                     (find-index |(and (tuple? $) (= :brackets (tuple/type $))) form)]
-            (visit-sequence (tuple/slice form (inc parameters)) fallback))
-          (unless (and (symbol? head)
-                       (opaque-call? (string head) record env
-                                     {:line (max 0 (dec (fallback 0)))
-                                      :character (max 0 (dec (fallback 1)))}))
-            (each child form (visit child))))))))
+                   (if (has-value? ['defn 'defn- 'defmacro 'defmacro- 'varfn 'varfn- 'fn] head)
+                     (when-let [parameters
+                                (find-index |(and (tuple? $) (= :brackets (tuple/type $))) form)]
+                       (visit-sequence (tuple/slice form (inc parameters)) fallback))
+                     (unless (and (symbol? head)
+                                  (opaque-call? (string head) record env
+                                                {:line (max 0 (dec (fallback 0)))
+                                                 :character (max 0 (dec (fallback 1)))}))
+                       (each child form (visit child))))))))
   (each form forms (visit form))
   results)
 
@@ -397,10 +397,10 @@
       (array ;(if include-undefined
                 (undefined-diagnostics source record workspace env declarations ignored)
                 @[])
-              ;(duplicate-diagnostics record)
-              ;(unused-binding-diagnostics tree source record env)
-              ;(unused-import-diagnostics record workspace)
-              ;shadowing
+             ;(duplicate-diagnostics record)
+             ;(unused-binding-diagnostics tree source record env)
+             ;(unused-import-diagnostics record workspace)
+             ;shadowing
              ;(control-flow-diagnostics (parse-forms source) record env)))
     ([err]
       (logging/warn (string "Static diagnostics failed: " err) [:diagnostics])

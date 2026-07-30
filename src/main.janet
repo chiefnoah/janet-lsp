@@ -270,43 +270,43 @@
   (unless (rpc/response? message)
     (try (workspace/refresh-scans state)
       ([err fiber]
-       (logging/err (string/format "Could not refresh workspace indexes: %m" err)
-                    [:index])
-       (debug/stacktrace fiber err ""))))
+        (logging/err (string/format "Could not refresh workspace indexes: %m" err)
+                     [:index])
+        (debug/stacktrace fiber err ""))))
   (def result
     (cond
-    (rpc/response? message)
-    (workspace/handle-client-response message state)
+      (rpc/response? message)
+      (workspace/handle-client-response message state)
 
-    (if-let [[code error-message data] (rpc/validate-message message)]
-      (do (write-error id code error-message data) true))
-    state
+      (if-let [[code error-message data] (rpc/validate-message message)]
+        (do (write-error id code error-message data) true))
+      state
 
-    (and (not notification?) (has-key? (state :cancelled-requests) id))
-    (do
-      (put (state :cancelled-requests) id nil)
-      (write-error id -32800 "Request cancelled")
-      state)
+      (and (not notification?) (has-key? (state :cancelled-requests) id))
+      (do
+        (put (state :cancelled-requests) id nil)
+        (write-error id -32800 "Request cancelled")
+        state)
 
-    (match (lifecycle-action message state)
-      :ignore state
-      [code error-message data]
-      (do (write-error id code error-message data) state)
-      nil
-      (emit-handler-result
-        (try
-          (do
-            (when (get open-document-methods method)
-              (documents/refresh-pending state (get message "params") id))
-            (when (and method (not= "textDocument/didChange" method)
-                       (not= "janet/internal/analyzeDocument" method))
-              (workspace/refresh-links state))
-            (handle-message message state))
-          ([err fiber]
-            (if (= :request-cancelled err)
-              [:rpc-error state -32800 "Request cancelled" nil]
-              [:error state err fiber])))
-        id notification?))))
+      (match (lifecycle-action message state)
+        :ignore state
+        [code error-message data]
+        (do (write-error id code error-message data) state)
+        nil
+        (emit-handler-result
+          (try
+            (do
+              (when (get open-document-methods method)
+                (documents/refresh-pending state (get message "params") id))
+              (when (and method (not= "textDocument/didChange" method)
+                         (not= "janet/internal/analyzeDocument" method))
+                (workspace/refresh-links state))
+              (handle-message message state))
+            ([err fiber]
+              (if (= :request-cancelled err)
+                [:rpc-error state -32800 "Request cancelled" nil]
+                [:error state err fiber])))
+          id notification?))))
   (unless notification?
     (put (state :cancelled-requests) id nil))
   result)
@@ -345,7 +345,7 @@
           nil (do (ev/give incoming :eof) (break))
           [:ok message]
           (do (ev/give incoming [:ok message])
-              (when (= "exit" (get message "method")) (break)))
+            (when (= "exit" (get message "method")) (break)))
           parsed (ev/give incoming parsed))))
     nil :n)
   (forever
@@ -367,8 +367,8 @@
     nil (do (file/flush stdout) (os/exit 0))
     [:parse-error err]
     (do (logging/warn (string/format "Invalid JSON: %s" err) [:rpc])
-        (write-error :null -32700 "Parse error")
-        (synchronous-message-loop state))
+      (write-error :null -32700 "Parse error")
+      (synchronous-message-loop state))
     [:ok message]
     (match (dispatch-message message state)
       [:exit status] (do (file/flush stdout) (os/exit status))

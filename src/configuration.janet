@@ -3,9 +3,9 @@
    "compile" true
    "runtime" true
    "analysis" true
-    "unusedParameter" true
-    "unusedBinding" true
-    "unusedImport" true
+   "unusedParameter" true
+   "unusedBinding" true
+   "unusedImport" true
    "calls" true
    "undefinedSymbol" true
    "duplicateDefinition" true
@@ -148,8 +148,8 @@
                    (set disabled @{})
                    (each name targets (put disabled name nil)))
         "ignore-next-line" (put ignored (inc line-number)
-                                 (reduce (fn [set name] (put set name true) set)
-                                         @{} targets))))
+                                (reduce (fn [set name] (put set name true) set)
+                                        @{} targets))))
     (array/push disabled-at (copy-set disabled)))
   (filter
     (fn [result]

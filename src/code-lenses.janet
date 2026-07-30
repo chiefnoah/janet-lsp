@@ -136,7 +136,7 @@
                                            (deep= (definition :selection-range)
                                                   (reference :range))))
                            :let [content (request-control/content
-                                          state sources (reference :uri))]
+                                           state sources (reference :uri))]
                            :when content]
                     {:uri (reference :uri)
                      :range (server-utils/lsp-range state content (reference :range))})
@@ -235,8 +235,8 @@
                              :stdoutTruncated (stdout :truncated)
                              :stderrTruncated (stderr :truncated)}])
                      ([error]
-                      (do (when process (try (os/proc-kill process true) ([_] nil)))
-                          [:error error])))
+                       (do (when process (try (os/proc-kill process true) ([_] nil)))
+                         [:error error])))
               [:ok result] [:ok state result]
               [:error error]
               [:rpc-error state -32603 "Command failed to start" (string error)])))))

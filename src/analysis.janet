@@ -67,20 +67,20 @@
     {:key (key version content)
      :version version
      :content-hash (index/content-hash content)
-      :source content
+     :source content
      :workspace-uri (workspace :uri)
      :trusted (workspace :trusted)
      :diagnostic-generation (workspace :diagnostic-generation)
      :index-generation (document-generation workspace (document :uri))
      :diagnostic-result-id (diagnostic-result-id workspace (document :uri)
-                                                  (key version content) items)
-      :incomplete incomplete?
+                                                 (key version content) items)
+     :incomplete incomplete?
      :syntax-tree syntax-tree
-      :signatures (if oversized @[] (signatures/all content))
+     :signatures (if oversized @[] (signatures/all content))
      :diagnostics items
      :eval-env env
-      :index recovered
-      :references (recovered :references)}))
+     :index recovered
+     :references (recovered :references)}))
 
 (defn current [document workspace]
   (def snapshot (document :analysis))
@@ -90,8 +90,8 @@
              (= (snapshot :trusted) (workspace :trusted))
              (= (snapshot :diagnostic-generation)
                 (workspace :diagnostic-generation))
-              (= (or (snapshot :index-generation) 0)
-                 (document-generation workspace (document :uri))))
+             (= (or (snapshot :index-generation) 0)
+                (document-generation workspace (document :uri))))
     snapshot))
 
 (defn find-snapshot [document snapshot-key]
@@ -154,7 +154,7 @@
       (put (workspace :document-generations) uri
            (inc (get (workspace :document-generations) uri 0))))
     (put workspace :index-generation
-          (inc (or (workspace :index-generation) 0))))
+         (inc (or (workspace :index-generation) 0))))
   (document-generation workspace document-uri))
 
 (defn install-index [document workspace]
@@ -168,13 +168,13 @@
   (def linked-record (get-in workspace [:index (document :uri)]))
   (def installed
     (merge snapshot
-            {:index linked-record
-             :references (linked-record :references)
-              :index-generation (document-generation workspace (document :uri))
-              :semantic nil
+           {:index linked-record
+            :references (linked-record :references)
+            :index-generation (document-generation workspace (document :uri))
+            :semantic nil
             :diagnostic-result-id
             (diagnostic-result-id workspace (document :uri) (snapshot :key)
-                                   (snapshot :diagnostics))}))
+                                  (snapshot :diagnostics))}))
   (unless (snapshot :incomplete)
     (put document :stable-index linked-record))
   (store document installed)

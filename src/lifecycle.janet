@@ -63,8 +63,8 @@
                        "rangeLimit"]))
   (put state :document-link-tooltips
        (not (not (get-in params
-                          ["capabilities" "textDocument" "documentLink"
-                           "tooltipSupport"]))))
+                         ["capabilities" "textDocument" "documentLink"
+                          "tooltipSupport"]))))
   (put state :rename-file-support
        (has-value?
          (get-in params ["capabilities" "workspace" "workspaceEdit"
@@ -126,12 +126,12 @@
       :signatureHelpProvider {:triggerCharacters ["(" " "]
                               :retriggerCharacters [" "]}
       :documentFormattingProvider true
-       :documentRangeFormattingProvider true
-       :documentOnTypeFormattingProvider
-       {:firstTriggerCharacter ")" :moreTriggerCharacter ["]" "}"]}
-       :definitionProvider true
-       :typeDefinitionProvider true
-       :implementationProvider true
+      :documentRangeFormattingProvider true
+      :documentOnTypeFormattingProvider
+      {:firstTriggerCharacter ")" :moreTriggerCharacter ["]" "}"]}
+      :definitionProvider true
+      :typeDefinitionProvider true
+      :implementationProvider true
       :documentSymbolProvider true
       :workspaceSymbolProvider true
       :referencesProvider true
@@ -141,18 +141,18 @@
       :documentLinkProvider {:resolveProvider false}
       :callHierarchyProvider true
       :renameProvider {:prepareProvider true}
-       :semanticTokensProvider
+      :semanticTokensProvider
       {:legend {:tokenTypes server-meta/semantic-token-types
                 :tokenModifiers server-meta/semantic-token-modifiers}
-        :full {:delta true}
-        :range true}
-       :codeActionProvider
-       {:codeActionKinds ["quickfix" "source.sortImports" "source.organizeImports"]}
-       :codeLensProvider {:resolveProvider true}
-       :executeCommandProvider
-       {:commands ["janet-lsp.runTest" "janet-lsp.runFlycheck"
-                   "janet-lsp.runDefinition"]}
-       :inlayHintProvider (any? (values (state :inlay-hints)))
+       :full {:delta true}
+       :range true}
+      :codeActionProvider
+      {:codeActionKinds ["quickfix" "source.sortImports" "source.organizeImports"]}
+      :codeLensProvider {:resolveProvider true}
+      :executeCommandProvider
+      {:commands ["janet-lsp.runTest" "janet-lsp.runFlycheck"
+                  "janet-lsp.runDefinition"]}
+      :inlayHintProvider (any? (values (state :inlay-hints)))
       :workspace {:workspaceFolders {:supported true :changeNotifications true}}}
      :serverInfo (server-meta/server-info)})
   (logging/message result [:initialize])

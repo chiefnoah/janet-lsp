@@ -39,13 +39,13 @@
 
 (defn- byte-range [state content lsp-range]
   (when-let [start (position/lsp->byte-position content
-                                                 (or (get lsp-range "start")
-                                                     (get lsp-range :start))
-                                                 (state :position-encoding))
+                                                (or (get lsp-range "start")
+                                                    (get lsp-range :start))
+                                                (state :position-encoding))
              end (position/lsp->byte-position content
-                                               (or (get lsp-range "end")
-                                                   (get lsp-range :end))
-                                               (state :position-encoding))]
+                                              (or (get lsp-range "end")
+                                                  (get lsp-range :end))
+                                              (state :position-encoding))]
     {:start (lookup/to-index start content) :end (lookup/to-index end content)}))
 
 (defn- lsp-edit [state content start end new-text]
@@ -127,7 +127,7 @@
       (when-let [call (call-at state content diagnostic scanned)]
         (when-let [parameters
                    (first (filter |(and (= 91 ($ :open))
-                                       (= (get-in call [:form :id]) ($ :parent)))
+                                        (= (get-in call [:form :id]) ($ :parent)))
                                   (scanned :forms)))]
           (first (filter |(and (= name ($ :value))
                                (= (parameters :id) ($ :parent)))
@@ -184,7 +184,7 @@
                                               (imported :module))]
                   :when uri
                   definition :in (index/exported-definitions workspace uri)]
-            (string (imported :prefix) (definition :name)))))
+           (string (imported :prefix) (definition :name)))))
     (def collision
       (or (nil? desired-bindings)
           (any? (map |(has-value? existing-bindings $) desired-bindings))))
@@ -309,8 +309,8 @@
     (when (and (= (length block) (length (distinct (map |($ :module) block))))
                (not overlapping-prefixes)
                (not (any? (map |(has-value? (try (parse ($ :source)) ([_] @[]))
-                                             :fresh)
-                                block))))
+                                            :fresh)
+                               block))))
       (def sorted (sort-by |(string/ascii-lower ($ :source)) block))
       (def replacement (string/join (map |($ :source) sorted) newline))
       (def start (get-in block [0 :start]))
@@ -356,10 +356,10 @@
         (when action (array/push actions action)))))
   (when (requested? only "source.sortImports")
     (when-let [action (source-action state document "source.sortImports"
-                                    "Sort imports")]
+                                     "Sort imports")]
       (array/push actions action)))
   (when (requested? only "source.organizeImports")
     (when-let [action (source-action state document "source.organizeImports"
-                                    "Organize imports")]
+                                     "Organize imports")]
       (array/push actions action)))
   [:ok state actions])

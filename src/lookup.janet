@@ -45,7 +45,7 @@
         (= byte 35) (do (buffer/push-byte masked 32) (set state :comment))
         (= byte 34)
         (do (buffer/push-byte masked (if retain-string? 120 32))
-            (set state :string))
+          (set state :string))
         (= byte 96)
         (do
           (var count 0)

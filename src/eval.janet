@@ -32,7 +32,7 @@
                  #'merge-into true
                  'fn true
                  #'keyword true 'short-fn true
-})
+                 })
 
 (def- importers {'import true 'import* true 'dofile true 'require true})
 
@@ -110,65 +110,65 @@
        :location [1 1]
        :severity 1}]
      (make-env (or base-env root-env))]
-  (if (not trusted)
-    (safe-buffer str filename base-env)
-    (do
-  (var state (string str))
-  (defn chunks [buf parser]
-    (def ret state)
-    (set state nil)
-    (when ret
-      (buffer/push-string buf str)
-      (buffer/push-string buf "\n")))
+    (if (not trusted)
+      (safe-buffer str filename base-env)
+      (do
+        (var state (string str))
+        (defn chunks [buf parser]
+          (def ret state)
+          (set state nil)
+          (when ret
+            (buffer/push-string buf str)
+            (buffer/push-string buf "\n")))
 
-  (def fresh-env (make-env (or base-env root-env)))
+        (def fresh-env (make-env (or base-env root-env)))
 
-  (each path (or unique-paths @[])
-    (cond
-      (string/has-suffix? ".janet" path) (array/push ((fresh-env 'module/paths) :value) [path :source])
-      (string/has-suffix? ".so" path) (array/push ((fresh-env 'module/paths) :value) [path :native])
-      (string/has-suffix? ".jimage" path) (array/push ((fresh-env 'module/paths) :value) [path :jimage])))
+        (each path (or unique-paths @[])
+          (cond
+            (string/has-suffix? ".janet" path) (array/push ((fresh-env 'module/paths) :value) [path :source])
+            (string/has-suffix? ".so" path) (array/push ((fresh-env 'module/paths) :value) [path :native])
+            (string/has-suffix? ".jimage" path) (array/push ((fresh-env 'module/paths) :value) [path :jimage])))
 
-  (def eval-fiber
-    (fiber/new
-      |(do (var returnval @[])
-         (try (run-context {:chunks chunks
-                            :on-compile-error (fn compile-error [msg errf where line col]
-                                                (array/push returnval {:message (string/format "compile error: %s" msg)
-                                                                       :location [line col]
-                                                                       :severity 1}))
-                            :on-compile-warning (fn compile-warning [msg errf where line col]
-                                                  (array/push returnval {:message (string/format "compile warning: %s" msg)
-                                                                         :location [line col]
-                                                                         :severity 2}))
-                            :on-parse-error (fn parse-error [p x]
-                                              (array/push returnval {:message (string/format "parse error: %s" (parser/error p))
-                                                                     :location (parser/where p)
-                                                                     :severity 1}))
-                            :evaluator flycheck-evaluator
-                            :fiber-flags :i
-                            :source filename})
-            ([err fib]
-              (array/push returnval {:message
-                                     (if (= "deadline expired" err)
-                                       (string/format
-                                         "analysis limit exceeded: evaluation exceeded %.3f seconds"
-                                         time-limit)
-                                       (string/format "runtime error: %s" err))
-                                     :location (runtime-location fib)
-                                     :severity 1})))
-         returnval) :e fresh-env))
-  (fiber/setmaxstack eval-fiber 2048)
-  (def result (ev/chan 1))
-  (def evaluation
-    (ev/go
-      (fn []
-        (ev/give result
-                 (try (resume eval-fiber)
-                   ([err] [{:message (string "analysis limit exceeded: " err)
-                            :location [1 1]
-                            :severity 1}]))))))
-  (ev/deadline time-limit evaluation evaluation true)
-  (def eval-fiber-return (ev/take result))
-  (logging/dbg (string/format "`eval-buffer` is returning: %m" eval-fiber-return) [:evaluation])
-  [eval-fiber-return fresh-env]))))
+        (def eval-fiber
+          (fiber/new
+            |(do (var returnval @[])
+               (try (run-context {:chunks chunks
+                                  :on-compile-error (fn compile-error [msg errf where line col]
+                                                      (array/push returnval {:message (string/format "compile error: %s" msg)
+                                                                             :location [line col]
+                                                                             :severity 1}))
+                                  :on-compile-warning (fn compile-warning [msg errf where line col]
+                                                        (array/push returnval {:message (string/format "compile warning: %s" msg)
+                                                                               :location [line col]
+                                                                               :severity 2}))
+                                  :on-parse-error (fn parse-error [p x]
+                                                    (array/push returnval {:message (string/format "parse error: %s" (parser/error p))
+                                                                           :location (parser/where p)
+                                                                           :severity 1}))
+                                  :evaluator flycheck-evaluator
+                                  :fiber-flags :i
+                                  :source filename})
+                 ([err fib]
+                   (array/push returnval {:message
+                                          (if (= "deadline expired" err)
+                                            (string/format
+                                              "analysis limit exceeded: evaluation exceeded %.3f seconds"
+                                              time-limit)
+                                            (string/format "runtime error: %s" err))
+                                          :location (runtime-location fib)
+                                          :severity 1})))
+               returnval) :e fresh-env))
+        (fiber/setmaxstack eval-fiber 2048)
+        (def result (ev/chan 1))
+        (def evaluation
+          (ev/go
+            (fn []
+              (ev/give result
+                       (try (resume eval-fiber)
+                         ([err] [{:message (string "analysis limit exceeded: " err)
+                                  :location [1 1]
+                                  :severity 1}]))))))
+        (ev/deadline time-limit evaluation evaluation true)
+        (def eval-fiber-return (ev/take result))
+        (logging/dbg (string/format "`eval-buffer` is returning: %m" eval-fiber-return) [:evaluation])
+        [eval-fiber-return fresh-env]))))

@@ -44,7 +44,7 @@
     (and occurrence-start
          (first
            (filter |(server-utils/same-position?
-                       occurrence-start (get-in $ [:range :start]))
+                      occurrence-start (get-in $ [:range :start]))
                    (get-in context [:document :analysis :index :calls] @[])))))
   (def identity
     (if call
@@ -81,21 +81,21 @@
 (defn on-incoming [state params request-id]
   (if-let [context (item-context state params)]
     (let [workspace (context :workspace)
-           sources @{}
+          sources @{}
           groups (grouped (index/incoming-calls workspace (context :identity)) :caller)
           results @[]]
       (eachp [caller-identity calls] groups
         (when (cancelled? state request-id)
           (break))
         (when-let [caller (index/callable-by-identity workspace caller-identity)
-                    item (callable-item state caller sources)
-                    content (request-control/content state sources (caller :uri))]
+                   item (callable-item state caller sources)
+                   content (request-control/content state sources (caller :uri))]
           (array/push results
                       {:from item
                        :fromRanges
                        (map |(server-utils/lsp-range state content ($ :range))
                             (sort-by |[(get-in $ [:range :start :line])
-                                      (get-in $ [:range :start :character])]
+                                       (get-in $ [:range :start :character])]
                                      calls))})))
       (if (cancelled? state request-id)
         [:rpc-error state -32800 "Request cancelled"]
@@ -105,27 +105,27 @@
 (defn on-outgoing [state params request-id]
   (if-let [context (item-context state params)]
     (if-let [caller-content
-              (server-utils/content state (get-in context [:callable :uri]))]
+             (server-utils/content state (get-in context [:callable :uri]))]
       (let [workspace (context :workspace)
-           sources (do (def found @{})
-                       (put found (get-in context [:callable :uri]) caller-content)
-                       found)
-          groups (grouped (index/outgoing-calls workspace (context :identity)) :identity)
-          results @[]]
-      (eachp [target-identity calls] groups
-        (when (cancelled? state request-id)
-          (break))
-        (when-let [target (index/callable-by-identity workspace target-identity)
-                    item (callable-item state target sources)]
-          (array/push results
-                      {:to item
-                       :toRanges
-                       (map |(server-utils/lsp-range state caller-content ($ :range))
-                            (sort-by |[(get-in $ [:range :start :line])
-                                      (get-in $ [:range :start :character])]
-                                     calls))})))
-      (if (cancelled? state request-id)
-        [:rpc-error state -32800 "Request cancelled"]
-        [:ok state (sorted-results results)]))
+            sources (do (def found @{})
+                      (put found (get-in context [:callable :uri]) caller-content)
+                      found)
+            groups (grouped (index/outgoing-calls workspace (context :identity)) :identity)
+            results @[]]
+        (eachp [target-identity calls] groups
+          (when (cancelled? state request-id)
+            (break))
+          (when-let [target (index/callable-by-identity workspace target-identity)
+                     item (callable-item state target sources)]
+            (array/push results
+                        {:to item
+                         :toRanges
+                         (map |(server-utils/lsp-range state caller-content ($ :range))
+                              (sort-by |[(get-in $ [:range :start :line])
+                                         (get-in $ [:range :start :character])]
+                                       calls))})))
+        (if (cancelled? state request-id)
+          [:rpc-error state -32800 "Request cancelled"]
+          [:ok state (sorted-results results)]))
       [:ok state :null])
     [:ok state :null]))

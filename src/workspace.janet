@@ -176,7 +176,7 @@
         (try (os/spawn (if nice [nice "-n" "10" ;command] command))
           ([err]
             (logging/warn (string/format "Could not start workspace indexer: %s" err)
-                           [:index])
+                          [:index])
             (report-index-failure workspace :spawn)
             nil)))
       (when process
@@ -229,13 +229,13 @@
       (var result
         (if found
           (try (let [parsed (parse (slurp output))]
-               (if (and (dictionary? parsed)
-                         (has-value? [true false] (parsed :ok))
+                 (if (and (dictionary? parsed)
+                          (has-value? [true false] (parsed :ok))
                           (or (= false (parsed :ok))
                               (and (dictionary? (parsed :changes))
                                    (has-value? [true false] (parsed :cached)))))
-                  parsed
-                  {:ok false :error "invalid indexer output"}))
+                   parsed
+                   {:ok false :error "invalid indexer output"}))
             ([err] {:ok false :error (string "invalid indexer output: " err)}))
           {:ok false :error "indexer produced no output"}))
       (when found (os/rm output))
@@ -276,7 +276,7 @@
       (unless succeeded
         (logging/warn (string "Workspace index failed: "
                               (or (result :error) (string "exit status " status)))
-                       [:index]))
+                      [:index]))
       (unless succeeded
         (report-index-failure
           workspace
@@ -469,7 +469,7 @@
       (put state :diagnostic-settings settings)
       (put state :diagnostic-generation generation)
       (each configured
-            (array ;(values (state :workspaces)) ;[(state :standalone-workspace)])
+        (array ;(values (state :workspaces)) ;[(state :standalone-workspace)])
         (put configured :diagnostic-settings settings)
         (put configured :diagnostic-generation generation))
       (reanalyze-open-documents state)

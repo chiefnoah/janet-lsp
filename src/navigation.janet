@@ -141,7 +141,7 @@
    :kind (definition :kind)
    :range (server-utils/lsp-range state content (definition :range))
    :selectionRange (server-utils/lsp-range state content
-                                            (definition :selection-range))
+                                           (definition :selection-range))
    :children
    (array
      ;(map |{:name ($ :name)
@@ -213,8 +213,8 @@
         (array/push locations {:uri (context :uri)
                                :range (get-in context [:local :range])})))
     (each reference
-          (index/references-by-identity (context :workspace)
-                                        (get-in context [:indexed :identity]))
+      (index/references-by-identity (context :workspace)
+                                    (get-in context [:indexed :identity]))
       (array/push locations {:uri (reference :uri) :range (reference :range)})))
   (unless include-declaration
     (def definition (or (context :local) (context :indexed)))
@@ -236,20 +236,20 @@
     @[]
     (let [sources @{}]
       (distinct
-      (catseq [found :in (raw-references
-                           context
-                           (not= false (get-in params ["context" "includeDeclaration"])))
-               :let [content (request-control/content state sources (found :uri))]
-               :when content]
-        (request-control/checkpoint state request-id)
-         {:uri (found :uri)
-          :range (server-utils/lsp-range state content (found :range))})))))
+        (catseq [found :in (raw-references
+                             context
+                             (not= false (get-in params ["context" "includeDeclaration"])))
+                 :let [content (request-control/content state sources (found :uri))]
+                 :when content]
+          (request-control/checkpoint state request-id)
+          {:uri (found :uri)
+           :range (server-utils/lsp-range state content (found :range))})))))
 
 (defn on-references [state params request-id]
   (try [:ok state (references state params request-id)]
     ([err] (if (= :request-cancelled err)
-               [:rpc-error state -32800 "Request cancelled" nil]
-               (error err)))))
+             [:rpc-error state -32800 "Request cancelled" nil]
+             (error err)))))
 
 (defn on-document-highlights [state params]
   (def context (symbol-context state params))
@@ -267,7 +267,7 @@
           (catseq [reference :in (raw-references context true)
                    :when (= document-uri (reference :uri))]
             {:range (server-utils/lsp-range state (context :content)
-                                           (reference :range))
+                                            (reference :range))
              :kind (if (and (= definition-uri document-uri)
                             (server-utils/same-position?
                               definition-start
@@ -309,9 +309,9 @@
 
 (defn- byte-range [state content range]
   (when-let [start (position/lsp->byte-position content (get range "start")
-                                                 (state :position-encoding))
+                                                (state :position-encoding))
              end (position/lsp->byte-position content (get range "end")
-                                               (state :position-encoding))]
+                                              (state :position-encoding))]
     {:start (lookup/to-index start content) :end (lookup/to-index end content)}))
 
 (defn- token-range [token content]
@@ -430,8 +430,8 @@
                                         (get-in $ [:range :start])
                                         {:line (location :line)
                                          :character word-start}))
-                                 (get-in document
-                                         [:analysis :index :references]))))
+                                (get-in document
+                                        [:analysis :index :references]))))
             {:kind :alias
              :name (if (syntax :as) (imported :alias) prefix)
              :range {:start {:line (location :line) :character word-start}
@@ -521,7 +521,7 @@
             (record :imports)))
   (def target-uri
     (let [targets (index/module-uris (context :workspace) (record :uri)
-                                    (imported :module))]
+                                     (imported :module))]
       (and (= 1 (length targets)) (targets 0))))
   (def renamed-bindings
     (and target-uri
@@ -541,7 +541,7 @@
                 definition :in (index/exported-definitions (context :workspace) uri)
                 :when (or (empty? (other :only))
                           (has-value? (other :only) (definition :name)))]
-          (string (other :prefix) (definition :name)))))
+         (string (other :prefix) (definition :name)))))
   (when (and (not (empty? old-prefix)) renamed-bindings (empty? competing)
              (not (any? (map |(has-value? existing-bindings $) renamed-bindings))))
     (def changes @{})
@@ -594,7 +594,7 @@
                                                               (other :module))]
                                        (and (= 1 (length targets)) (targets 0)))]
                             (some |(and (or (empty? (other :only))
-                                           (has-value? (other :only) ($ :name)))
+                                            (has-value? (other :only) ($ :name)))
                                         (= candidate
                                            (string (other :prefix) ($ :name))))
                                   (index/exported-definitions workspace uri)))))
@@ -680,8 +680,8 @@
                                             (imported :module)))
             (when (has-value? targets old-uri)
               (when (> (length (filter |(and (= (imported :module) ($ :module))
-                                               (deep= (imported :range) ($ :range)))
-                                         (record :imports)))
+                                             (deep= (imported :range) ($ :range)))
+                                       (record :imports)))
                        1)
                 (set safe false))
               (when (not= 1 (length targets)) (set safe false))
@@ -713,14 +713,14 @@
                     ;(catseq [other :in (record :imports)
                               :when (not (deep= (other :range) (imported :range)))
                               :let [uris (index/module-uris workspace (record :uri)
-                                                           (other :module))]
+                                                            (other :module))]
                               :when (= 1 (length uris))
                               definition :in
                               (index/exported-definitions workspace (uris 0))
                               :when (or (empty? (other :only))
                                         (has-value? (other :only)
                                                     (definition :name)))]
-                      (string (other :prefix) (definition :name)))))
+                       (string (other :prefix) (definition :name)))))
                 (when (any? (map |(has-value? existing-bindings $) new-bindings))
                   (set safe false))
                 (each reference (record :references)
@@ -746,7 +746,7 @@
                          state (or (target :content)
                                    (get-in target [:context :content]))
                          (target :range))
-                 :placeholder (target :name)}]
+                :placeholder (target :name)}]
     [:rpc-error state -32602 "Invalid params" "symbol cannot be renamed"]))
 
 (defn- rename [state params request-id]
@@ -783,7 +783,7 @@
                               (not (string/find "/" new-name)))
                           ((if (= :alias (target :kind))
                              alias-rename member-rename)
-                           state target new-name))]
+                            state target new-name))]
       (do
         (request-control/checkpoint state request-id)
         [:ok state {:documentChanges (document-changes state changes)}])

@@ -110,12 +110,12 @@
         (array/push result
                     (diagnostic
                       "janet.call.missing-arguments" 1
-                       (string (signature :name) " expects at least "
-                               (signature :required) " positional arguments, got "
-                               positional-count)
-                       form
-                       {:missing (- (signature :required) positional-count)
-                        :provided positional-count})))
+                      (string (signature :name) " expects at least "
+                              (signature :required) " positional arguments, got "
+                              positional-count)
+                      form
+                      {:missing (- (signature :required) positional-count)
+                       :provided positional-count})))
       (cond
         (signature :variadic) nil
 
@@ -139,11 +139,11 @@
             (if (not (get known label))
               (array/push result
                           (diagnostic "janet.call.unknown-named-argument" 2
-                                       (string "unknown named argument " label " for "
-                                               (signature :name))
-                                       form {:label label
-                                             :positional (signature :positional)
-                                             :named-index index}))
+                                      (string "unknown named argument " label " for "
+                                              (signature :name))
+                                      form {:label label
+                                            :positional (signature :positional)
+                                            :named-index index}))
               (if (get seen label)
                 (array/push result
                             (diagnostic "janet.call.duplicate-named-argument" 2

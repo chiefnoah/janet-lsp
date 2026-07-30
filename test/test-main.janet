@@ -81,11 +81,11 @@
   (test (documents/apply-changes
           source
           [{"range" {"start" {"line" 0 "character" 1}
-                       "end" {"line" 0 "character" 3}}
+                     "end" {"line" 0 "character" 3}}
             "rangeLength" 2
             "text" "X"}
            {"range" {"start" {"line" 1 "character" 0}
-                       "end" {"line" 1 "character" 6}}
+                     "end" {"line" 1 "character" 6}}
             "rangeLength" 6
             "text" "next"}]
           "utf-16")
@@ -93,7 +93,7 @@
   (test (documents/apply-changes
           source
           [{"range" {"start" {"line" 0 "character" 1}
-                       "end" {"line" 0 "character" 5}}
+                     "end" {"line" 0 "character" 5}}
             "rangeLength" 4
             "text" "X"}]
           "utf-8")
@@ -108,10 +108,10 @@
   (test (documents/apply-changes
           source
           [{"range" {"start" {"line" 0 "character" 0}
-                       "end" {"line" 0 "character" 1}}
+                     "end" {"line" 0 "character" 1}}
             "text" "changed"}
            {"range" {"start" {"line" 9 "character" 0}
-                       "end" {"line" 9 "character" 1}}
+                     "end" {"line" 9 "character" 1}}
             "text" "invalid"}]
           "utf-16")
         nil)
@@ -320,7 +320,7 @@
                                   {:line 0 :character 0})
         nil)
   (test (get-in (index/resolve-definition workspace before-uri "public"
-                                           {:line 2 :character 0})
+                                          {:line 2 :character 0})
                 [:name])
         "public")
   (test (index/resolve-definition workspace nested-uri "public"
@@ -449,7 +449,7 @@
   (setdyn :push-diagnostics false)
   (documents/on-open
     state {"textDocument" {"uri" document-uri "version" 1
-                            "text" "(def lazy-value 1)\n"}})
+                           "text" "(def lazy-value 1)\n"}})
   (def document (get-in state [:documents document-uri]))
   (test (document :analysis) nil)
   (test (map |($ :name) (index/definitions workspace)) @["lazy-value"])
@@ -901,7 +901,7 @@
 (deftest "read consecutive LSP frames"
   (def stream (file/temp))
   (file/write stream "Content-Type: application/json\r\nContent-Length: 3\r\n\r\none"
-                     "Content-Length: 3\r\n\r\ntwo")
+              "Content-Length: 3\r\n\r\ntwo")
   (file/seek stream :set 0)
   (test (transport/read-frame stream) @"one")
   (test (transport/read-frame stream) @"two")

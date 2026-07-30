@@ -9,10 +9,10 @@
                   :tag "v2.9.0"}])
 
 (task "test" []
-  (shell "jpm_tree/bin/judge" "test/test-main.janet"
-                                 "test/test-lookup.janet"
-                                 "test/test-parser.janet"
-                                 "test/test-integration.janet"))
+      (shell "jpm_tree/bin/judge" "test/test-main.janet"
+             "test/test-lookup.janet"
+             "test/test-parser.janet"
+             "test/test-integration.janet"))
 
 (declare-archive
   :name "janet-lsp"

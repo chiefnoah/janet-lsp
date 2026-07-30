@@ -29,7 +29,7 @@
   (def pathext
     (and (windows?)
          (string/split ";" (or (os/getenv "PATHEXT")
-                                ".COM;.EXE;.BAT;.CMD"))))
+                               ".COM;.EXE;.BAT;.CMD"))))
   (first
     (catseq [directory :in paths
              candidate :in (executable-names name nil pathext)

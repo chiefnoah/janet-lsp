@@ -180,18 +180,18 @@
     (do
       (request-control/checkpoint state request-id)
       (if-let [document (server-utils/document state params)]
-    (let [workspace (server-utils/document-workspace state document)
-          snapshot (or (analysis/current document workspace)
-                       (refresh state document workspace request-id))
-          result-id (snapshot :diagnostic-result-id)
-          report (if (= result-id (get params "previousResultId"))
-                   {:kind "unchanged" :resultId result-id}
-                   {:kind "full" :resultId result-id
-                    :items (snapshot :diagnostics)})]
-      (logging/message report [:diagnostics])
-      (request-control/checkpoint state request-id)
-      [:ok state report])
-    [:ok state :null]))
+        (let [workspace (server-utils/document-workspace state document)
+              snapshot (or (analysis/current document workspace)
+                           (refresh state document workspace request-id))
+              result-id (snapshot :diagnostic-result-id)
+              report (if (= result-id (get params "previousResultId"))
+                       {:kind "unchanged" :resultId result-id}
+                       {:kind "full" :resultId result-id
+                        :items (snapshot :diagnostics)})]
+          (logging/message report [:diagnostics])
+          (request-control/checkpoint state request-id)
+          [:ok state report])
+        [:ok state :null]))
     ([err] (if (= :request-cancelled err)
              [:rpc-error state -32800 "Request cancelled" nil]
              (error err)))))
@@ -209,7 +209,7 @@
   (if-let [document (get (state :documents) document-uri)]
     (let [workspace (server-utils/document-workspace state document)]
       [(or (analysis/current document workspace)
-            (refresh state document workspace request-id))
+           (refresh state document workspace request-id))
        (document :version)])
     (when-let [content (server-utils/content state document-uri)
                filepath (uri/file-uri->path document-uri)]
@@ -316,9 +316,9 @@
     (and (< start end)
          (not
            (any?
-              (map |(or (and (< ($ :start) start) (< start ($ :end)))
-                        (and (< ($ :start) end) (< end ($ :end))))
-                   atomic-spans)))
+             (map |(or (and (< ($ :start) start) (< start ($ :end)))
+                       (and (< ($ :start) end) (< end ($ :end))))
+                  atomic-spans)))
          (not
            (any? (map |(and (not ($ :complete))
                             (< ($ :start) end) (< start ($ :end)))
@@ -452,7 +452,7 @@
                    :desynchronized false
                    :snapshots @{}
                    :snapshot-order @[]}
-         _ (analysis/install-index document workspace)]
+        _ (analysis/install-index document workspace)]
     (put (state :documents) document-uri document)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)

@@ -29,12 +29,12 @@
                            :unique-paths (workspace :unique-paths)})
         _ (when state (request-control/checkpoint state request-id))
         lint-results (if (> (length content) eval/max-source-bytes)
-                        @[]
-                        (lint/analyze content env))
+                       @[]
+                       (lint/analyze content env))
         _ (when state (request-control/checkpoint state request-id))
         call-results (if (> (length content) eval/max-source-bytes)
-                        @[]
-                        (signatures/diagnostics content record))
+                       @[]
+                       (signatures/diagnostics content record))
         _ (when state (request-control/checkpoint state request-id))
         static-results (if (> (length content) eval/max-source-bytes)
                          @[]
@@ -45,7 +45,7 @@
                (if (result :code)
                  result
                  (merge result {:code (code (or (result :message) ""))})))
-              (array ;compiler-results ;lint-results ;call-results ;static-results))
+             (array ;compiler-results ;lint-results ;call-results ;static-results))
         seen @{}
         raw-results
         (keep (fn [result]
@@ -58,7 +58,7 @@
                   result))
               normalized)
         results (keep |(configuration/apply-severity $
-                                                       (workspace :diagnostic-settings))
+                                                     (workspace :diagnostic-settings))
                       (configuration/suppress raw-results content))]
     (logging/dbg (string/format "eval-buffer returned: %m" results) [:evaluation])
     (each result results
@@ -68,9 +68,9 @@
         (def range
           (if-let [byte-range (get result :range)
                    start (position/byte->lsp-position content (byte-range :start)
-                                                        encoding)
+                                                      encoding)
                    end (position/byte->lsp-position content (byte-range :end)
-                                                      encoding)]
+                                                    encoding)]
             {:start start :end end}
             (when-let [[line column] (get result :location)
                        location

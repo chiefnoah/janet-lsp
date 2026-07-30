@@ -260,7 +260,7 @@
   (var parent nil)
   (each span (reverse ordered)
     (def selection @{:range (lsp-index-range state source
-                                              (span :start) (span :end))})
+                                             (span :start) (span :end))})
     (when parent (put selection :parent parent))
     (set parent selection))
   parent)
@@ -357,7 +357,7 @@
         @[]))
     (when-let [target (first (filter |(and (os/stat $)
                                            (not= :directory (os/stat $ :mode)))
-                                      candidates))]
+                                     candidates))]
       (uri/path->file-uri target))))
 
 (defn- indexed-module-target [workspace document module]

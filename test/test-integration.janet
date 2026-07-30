@@ -267,30 +267,30 @@
 
 (deftest "smoke test real client capability profiles"
   (each [client capabilities encoding]
-        [["VS Code"
-          {:general {:positionEncodings ["utf-16"]}
-           :window {:workDoneProgress true}
-           :workspace {:workspaceFolders true
-                       :workspaceEdit {:documentChanges true
-                                       :resourceOperations ["create" "rename" "delete"]}}
-           :textDocument {:diagnostic {}
-                          :completion {:completionItem {:snippetSupport true}}}}
-          "utf-16"]
-         ["Neovim"
-          {:general {:positionEncodings ["utf-8" "utf-16"]}
-           :workspace {:workspaceEdit {:documentChanges true}}
-           :textDocument {:diagnostic {} :foldingRange {:lineFoldingOnly true}}}
-          "utf-8"]
-         ["Helix"
-          {:workspace {:workspaceEdit {:documentChanges true}}
-           :textDocument {:diagnostic {} :documentLink {:tooltipSupport true}}}
-          "utf-16"]
-         ["Zed"
-          {:general {:positionEncodings ["utf-8"]}
-           :workspace {:workspaceEdit {:documentChanges true}}
-           :textDocument {:diagnostic {}
-                          :completion {:completionItem {:snippetSupport true}}}}
-          "utf-8"]]
+    [["VS Code"
+      {:general {:positionEncodings ["utf-16"]}
+       :window {:workDoneProgress true}
+       :workspace {:workspaceFolders true
+                   :workspaceEdit {:documentChanges true
+                                   :resourceOperations ["create" "rename" "delete"]}}
+       :textDocument {:diagnostic {}
+                      :completion {:completionItem {:snippetSupport true}}}}
+      "utf-16"]
+     ["Neovim"
+      {:general {:positionEncodings ["utf-8" "utf-16"]}
+       :workspace {:workspaceEdit {:documentChanges true}}
+       :textDocument {:diagnostic {} :foldingRange {:lineFoldingOnly true}}}
+      "utf-8"]
+     ["Helix"
+      {:workspace {:workspaceEdit {:documentChanges true}}
+       :textDocument {:diagnostic {} :documentLink {:tooltipSupport true}}}
+      "utf-16"]
+     ["Zed"
+      {:general {:positionEncodings ["utf-8"]}
+       :workspace {:workspaceEdit {:documentChanges true}}
+       :textDocument {:diagnostic {}
+                      :completion {:completionItem {:snippetSupport true}}}}
+      "utf-8"]]
     (def cursor (spawn-lsp))
     (def initialized
       (request cursor 0 "initialize"
@@ -1058,8 +1058,7 @@
   (test (map |(get-in $ [:range :start :line]) (get-in inner [:result])) @[2 2])
 
   (notify cursor "textDocument/didChange"
-          {:textDocument {:uri document-uri :version 2
-                          }
+          {:textDocument {:uri document-uri :version 2}
            :contentChanges [{:text "(def value 1)\nvalue\n"}]})
   (def updated
     (request cursor 112 "textDocument/references"
@@ -1544,7 +1543,7 @@
             :capabilities
             {:textDocument {:diagnostic {}}
              :workspace {:workspaceEdit {:documentChanges true
-                                          :resourceOperations ["rename"]}}}})
+                                         :resourceOperations ["rename"]}}}})
   (open-text-document cursor module-uri
                       "(def shared 1)\n(def- collision 2)\n")
   (open-text-document
@@ -1735,7 +1734,7 @@
         {:textDocument {:diagnostic {}}}))
     (def cursor (start-lsp capabilities))
     (test (get-in (cursor :initialize)
-                   [:result :capabilities :semanticTokensProvider :full])
+                  [:result :capabilities :semanticTokensProvider :full])
           @{:delta true})
     (test (get-in (cursor :initialize)
                   [:result :capabilities :semanticTokensProvider :range])
@@ -1754,7 +1753,7 @@
                (map |(data $) (range 0 (length data) 5)))
           true)
     (test (has-value? (map |(data (+ $ 2)) (range 0 (length data) 5))
-                       (if (= encoding "utf-8") 4 2))
+                      (if (= encoding "utf-8") 4 2))
           true)
     (def unchanged
       (request cursor 297 "textDocument/semanticTokens/full/delta"
@@ -1948,7 +1947,7 @@
            {:rootUri root-uri
             :initializationOptions
             {:codeLenses {:references false :tests false
-                           :flycheck false :runnable false}}
+                          :flycheck false :runnable false}}
             :capabilities {:textDocument {:diagnostic {}}}})
   (open-text-document restricted source-uri source)
   (test (get-in
@@ -2789,10 +2788,10 @@
   (notify cursor "$/cancelRequest" {:id 159})
   (test (get-in (request cursor 159 "workspace/diagnostic" {}) [:error :code]) -32800)
   (each [id method]
-        [[312 "workspace/symbol"]
-          [313 "textDocument/references"]
-          [314 "textDocument/rename"]
-         [315 "textDocument/semanticTokens/full"]]
+    [[312 "workspace/symbol"]
+     [313 "textDocument/references"]
+     [314 "textDocument/rename"]
+     [315 "textDocument/semanticTokens/full"]]
     (notify cursor "$/cancelRequest" {:id id})
     (test (get-in
             (request cursor id method

@@ -202,7 +202,7 @@
                                     [:previous]))) :binding
                 (and (= "loop" head) (= argument 0)
                      (zero? (% (get-in (direct-state source (entry :index) cursor)
-                                        [:previous])
+                                       [:previous])
                                3))) :binding
                 nil)))))
       (reverse (range 0 (length stack))))
@@ -319,12 +319,12 @@
                     (has-value? (imported :only) (definition :name)))
             (def label (string (imported :prefix) (definition :name)))
             (array/push found
-                         {:label label
-                          :kind (definition :kind)
-                          :detail (string "Imported from " (imported :module))
-                          :sortText (rank 1 (get usage label 0) label)
-                          :textEdit (lsp-token-edit state (document :content)
-                                                    token label)}))))))
+                        {:label label
+                         :kind (definition :kind)
+                         :detail (string "Imported from " (imported :module))
+                         :sortText (rank 1 (get usage label 0) label)
+                         :textEdit (lsp-token-edit state (document :content)
+                                                   token label)}))))))
   (utils/concat-dedup-by-label found))
 
 (defn- call-module [content call]
@@ -378,7 +378,7 @@
 
 (defn- import-position [record content]
   (if-let [imported (last (sort-by |(get-in $ [:range :end :line])
-                                  (filter |($ :top-level) (record :imports))))]
+                                   (filter |($ :top-level) (record :imports))))]
     (get-in imported [:range :end])
     (if (string/has-prefix? "#!" content)
       (if (string/find "\n" content)
@@ -392,17 +392,17 @@
   (def after-import?
     (any? (map |($ :top-level) (get-in document [:analysis :index :imports] @[]))))
   (def after-shebang? (and (not after-import?)
-                            (string/has-prefix? "#!" (document :content))))
+                           (string/has-prefix? "#!" (document :content))))
   (def shebang-line-complete?
     (and after-shebang? (string/find "\n" (document :content))))
   (def newline (if (string/find "\r\n" (document :content)) "\r\n" "\n"))
   {:range (server-utils/lsp-range state (document :content)
-                                   {:start position :end position})
-    :newText (string (if (or after-import?
-                             (and after-shebang? (not shebang-line-complete?)))
-                       newline "")
-                     "(import " (module-expression module) " :only [" name
-                     "] :prefix \"\")" newline)})
+                                  {:start position :end position})
+   :newText (string (if (or after-import?
+                            (and after-shebang? (not shebang-line-complete?)))
+                      newline "")
+                    "(import " (module-expression module) " :only [" name
+                    "] :prefix \"\")" newline)})
 
 (defn missing-import-edit [state document name]
   (def workspace (server-utils/document-workspace state document))
@@ -541,10 +541,10 @@
             named-items (keyword-items workspace prefix usage false))
           (let [ranked-locals
                 (map |(merge $ {:sortText (rank 0 (get usage (string ($ :label)) 0)
-                                                   (string ($ :label)))}) locals)
+                                                (string ($ :label)))}) locals)
                 ranked-globals
                 (map |(merge $ {:sortText (rank 2 (get usage (string ($ :label)) 0)
-                                                    (string ($ :label)))}) globals)]
+                                                (string ($ :label)))}) globals)]
             (utils/concat-dedup-by-label
               named-items
               ranked-locals

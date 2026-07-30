@@ -33,44 +33,44 @@
 (def- parse-peg
   "Peg to parse Janet with extra information, namely comments."
   (peg/compile
-   ~{:ws (+ (set " \t\r\f\0\v") '"\n")
-     :readermac (set "';~,|")
-     :symchars (+ (range "09" "AZ" "az" "\x80\xFF") (set "!$%&*+-./:<?=>@^_"))
-     :token (some :symchars)
-     :hex (range "09" "af" "AF")
-     :escape (* "\\" (+ (set "ntrzfev0ab'?\"\\")
-                        (* "x" :hex :hex)
-                        (* "u" :hex :hex :hex :hex)
-                        (* "U" :hex :hex :hex :hex :hex :hex)
-                        (error (constant "bad hex escape"))))
-     :comment (/ (* "#" '(any (if-not (+ "\n" -1) 1)) (+ "\n" -1)) ,(pnode :comment))
-     :span (/ ':token ,(pnode :span))
-     :bytes '(* "\"" (any (+ :escape (if-not "\"" 1))) "\"")
-     :string (/ :bytes ,(pnode :string))
-     :buffer (/ (* "@" :bytes) ,(pnode :buffer))
-     :long-bytes '{:delim (some "`")
-                   :open (capture :delim :n)
-                   :close (cmt (* (not (> -1 "`")) (-> :n) ':delim) ,=)
-                   :main (drop (* :open (any (if-not :close 1)) :close))}
-     :long-string (/ :long-bytes ,(pnode :string))
-     :long-buffer (/ (* "@" :long-bytes) ,(pnode :buffer))
-     :ptuple (/ (group (* "(" (any :input) (+ ")" (error)))) ,(pnode :ptuple))
-     :btuple (/ (group (* "[" (any :input) (+ "]" (error)))) ,(pnode :btuple))
-     :struct (/ (group (* "{" (any :input) (+ "}" (error)))) ,(pnode :struct))
-     :parray (/ (group (* "@(" (any :input) (+ ")" (error)))) ,(pnode :array))
-     :barray (/ (group (* "@[" (any :input) (+ "]" (error)))) ,(pnode :array))
-     :table (/ (group (* "@{" (any :input) (+ "}" (error)))) ,(pnode :table))
-     :rmform (/ (group (* ':readermac
-                          (group (any :non-form))
-                          :form))
-                ,(pnode :rmform))
-     :form (choice :rmform
-                   :parray :barray :ptuple :btuple :table :struct
-                   :buffer :string :long-buffer :long-string
-                   :span)
-     :non-form (choice :ws :comment)
-     :input (choice :non-form :form)
-     :main (* (any :input) (+ -1 (error)))}))
+    ~{:ws (+ (set " \t\r\f\0\v") '"\n")
+      :readermac (set "';~,|")
+      :symchars (+ (range "09" "AZ" "az" "\x80\xFF") (set "!$%&*+-./:<?=>@^_"))
+      :token (some :symchars)
+      :hex (range "09" "af" "AF")
+      :escape (* "\\" (+ (set "ntrzfev0ab'?\"\\")
+                         (* "x" :hex :hex)
+                         (* "u" :hex :hex :hex :hex)
+                         (* "U" :hex :hex :hex :hex :hex :hex)
+                         (error (constant "bad hex escape"))))
+      :comment (/ (* "#" '(any (if-not (+ "\n" -1) 1)) (+ "\n" -1)) ,(pnode :comment))
+      :span (/ ':token ,(pnode :span))
+      :bytes '(* "\"" (any (+ :escape (if-not "\"" 1))) "\"")
+      :string (/ :bytes ,(pnode :string))
+      :buffer (/ (* "@" :bytes) ,(pnode :buffer))
+      :long-bytes '{:delim (some "`")
+                    :open (capture :delim :n)
+                    :close (cmt (* (not (> -1 "`")) (-> :n) ':delim) ,=)
+                    :main (drop (* :open (any (if-not :close 1)) :close))}
+      :long-string (/ :long-bytes ,(pnode :string))
+      :long-buffer (/ (* "@" :long-bytes) ,(pnode :buffer))
+      :ptuple (/ (group (* "(" (any :input) (+ ")" (error)))) ,(pnode :ptuple))
+      :btuple (/ (group (* "[" (any :input) (+ "]" (error)))) ,(pnode :btuple))
+      :struct (/ (group (* "{" (any :input) (+ "}" (error)))) ,(pnode :struct))
+      :parray (/ (group (* "@(" (any :input) (+ ")" (error)))) ,(pnode :array))
+      :barray (/ (group (* "@[" (any :input) (+ "]" (error)))) ,(pnode :array))
+      :table (/ (group (* "@{" (any :input) (+ "}" (error)))) ,(pnode :table))
+      :rmform (/ (group (* ':readermac
+                           (group (any :non-form))
+                           :form))
+                 ,(pnode :rmform))
+      :form (choice :rmform
+                    :parray :barray :ptuple :btuple :table :struct
+                    :buffer :string :long-buffer :long-string
+                    :span)
+      :non-form (choice :ws :comment)
+      :input (choice :non-form :form)
+      :main (* (any :input) (+ -1 (error)))}))
 
 (defn- make-tree
   "Turn a string of source code into a tree that will be printed"

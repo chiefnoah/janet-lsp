@@ -36,7 +36,7 @@
          (doc/my-doc* (symbol label) (or eval-env (make-env root-env)))))
   (var result (if documentation
                 (merge params {"documentation" {:kind "markdown"
-                                                 :value documentation}})
+                                                :value documentation}})
                 params))
   (def additional-key
     (first (filter |(= "additionalTextEdits" (string $)) (keys result))))
