@@ -386,6 +386,10 @@
   (test (changed :complete) false)
   (test (changed :hashed) 1)
   (test (deep= (changed :dirty) @[source-path]) true)
+  (def changes
+    (index-cache/rebuild-changes cache-path root-uri root index/default-exclusions))
+  (test (keys changes) @[document-uri])
+  (test (map |($ :name) (index/definitions {:index changes})) @["hacked-value"])
   (def rebuilt
     (index-cache/rebuild cache-path root-uri root index/default-exclusions))
   (test (map |($ :name) (index/definitions {:index rebuilt})) @["hacked-value"])
@@ -451,6 +455,28 @@
   (documents/refresh-pending state {"textDocument" {"uri" document-uri}})
   (test (not (nil? (document :analysis))) true)
   (setdyn :push-diagnostics previous-push)
+  (os/rmdir root))
+
+(deftest "coalesce workspace cache writes until a quiet tick"
+  (def root (platform/temp-path (string "janet-lsp-cache-write-" (os/getpid))))
+  (os/mkdir root)
+  (def filepath (path/join root "main.janet"))
+  (spit filepath "(def cached-later 1)\n")
+  (def root-uri (uri/path->file-uri root))
+  (def cache-path (path/join root "index.cache"))
+  (def records (index/scan root index/default-exclusions))
+  (def owner @{:uri root-uri :path root :cache-path cache-path
+               :exclusions index/default-exclusions :disk-index records
+               :cache-current false :cache-write-after (inc (os/time))})
+  (def state @{:workspaces @{root-uri owner}})
+  (workspace/flush-cache-writes state)
+  (test (os/stat cache-path) nil)
+  (test (not (nil? (owner :cache-write-after))) true)
+  (workspace/flush-cache-writes state true)
+  (test (not (nil? (os/stat cache-path))) true)
+  (test (owner :cache-write-after) nil)
+  (os/rm cache-path)
+  (os/rm filepath)
   (os/rmdir root))
 
 (deftest "replay watcher changes over completed workspace scans"

@@ -8,7 +8,8 @@
   (def root-uri (args 5))
   (def temporary (string output ".tmp"))
   (def result
-    (try {:ok true :index (index-cache/rebuild cache-path root-uri root exclusions false)}
+    (try (merge {:ok true}
+                (index-cache/rebuild-dirty cache-path root-uri root exclusions true))
       ([err] {:ok false :error (string err)})))
   (spit temporary (string/format "%j" result))
   (os/rename temporary output))

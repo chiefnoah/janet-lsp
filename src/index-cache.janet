@@ -246,3 +246,21 @@
   (when persist
     (try (write cache-path root-uri exclusions records) ([_] nil)))
   records)
+
+(defn rebuild-dirty [cache-path root-uri root exclusions &opt persist]
+  (def loaded (load cache-path root-uri root exclusions))
+  (def changes @{})
+  (each filepath (loaded :dirty)
+    (try
+      (let [document-uri (uri/path->file-uri filepath)]
+        (put changes document-uri (index/analyze document-uri (slurp filepath))))
+      ([_] nil)))
+  (def cached
+    (when persist
+      (def records (loaded :index))
+      (eachp [document-uri record] changes (put records document-uri record))
+      (write cache-path root-uri exclusions records)))
+  {:changes changes :cached cached})
+
+(defn rebuild-changes [cache-path root-uri root exclusions]
+  ((rebuild-dirty cache-path root-uri root exclusions) :changes))
