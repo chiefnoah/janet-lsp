@@ -165,6 +165,9 @@
               {:name "generated" :generated true :uri document-uri})
   (analysis/replace-record workspace document-uri (index/analyze document-uri source))
   (test (= (get-in workspace [:index document-uri]) cached) false)
+  (test (workspace :links-dirty) true)
+  (workspace/refresh-links @{:workspaces @{"workspace" workspace}})
+  (test (workspace :links-dirty) false)
   (test (index/definitions workspace "generated") @[]))
 
 (deftest "honor git ignores and hidden directories during source discovery"

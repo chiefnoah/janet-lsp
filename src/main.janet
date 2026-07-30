@@ -265,12 +265,15 @@
 (defn dispatch-message [message state]
   (def id (rpc/message-id message))
   (def notification? (rpc/notification? message))
+  (def method (get message "method"))
   (unless (rpc/response? message)
     (try (workspace/refresh-scans state)
       ([err fiber]
         (logging/err (string/format "Could not refresh workspace indexes: %m" err)
                      [:index])
         (debug/stacktrace fiber err ""))))
+  (when (and method (not= "textDocument/didChange" method))
+    (workspace/refresh-links state))
   (cond
     (rpc/response? message)
     (workspace/handle-client-response message state)

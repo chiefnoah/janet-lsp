@@ -85,9 +85,8 @@
   (def generated
     (and record (filter |($ :generated) (record :definitions))))
   (unless (and same-content (deep= previous-generated generated))
-    (if record
-      (index/update-record workspace document-uri record)
-      (index/remove workspace document-uri)))
+    (put (workspace :index) document-uri record)
+    (put workspace :links-dirty true))
   (unless same-content
     (put workspace :index-generation
          (inc (or (workspace :index-generation) 0))))

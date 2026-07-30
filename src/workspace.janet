@@ -127,7 +127,15 @@
       (when-let [filepath (uri/file-uri->path document-uri)]
         (when (not= workspace (server-utils/workspace-for-path state filepath))
           (put (workspace :index) document-uri nil))))
-    (index/relink workspace))
+    (index/relink workspace)
+    (put workspace :links-dirty false))
+  state)
+
+(defn refresh-links [state]
+  (each workspace (values (state :workspaces))
+    (when (workspace :links-dirty)
+      (index/relink workspace)
+      (put workspace :links-dirty false)))
   state)
 
 (defn merge-scan-changes [disk-index changes]
