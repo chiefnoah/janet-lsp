@@ -157,6 +157,12 @@
           (inc (or (workspace :index-generation) 0))))
   (document-generation workspace document-uri))
 
+(defn install-index [document workspace]
+  (def record (index/analyze (document :uri) (document :content)))
+  (replace-record workspace (document :uri) record)
+  (put document :stable-index (get-in workspace [:index (document :uri)]))
+  record)
+
 (defn install [document workspace snapshot &opt state request-id]
   (replace-record workspace (document :uri) (snapshot :index))
   (def linked-record (get-in workspace [:index (document :uri)]))

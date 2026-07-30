@@ -429,6 +429,30 @@
   (workspace/partition-indexes state)
   (test (not (nil? (get (parent :index) document-uri))) true))
 
+(deftest "didOpen installs an index and defers pull-client analysis"
+  (def root (platform/temp-path (string "janet-lsp-lazy-open-" (os/getpid))))
+  (os/mkdir root)
+  (def filepath (path/join root "main.janet"))
+  (def document-uri (uri/path->file-uri filepath))
+  (def root-uri (uri/path->file-uri root))
+  (def workspace (workspace/configure root-uri @[]))
+  (def state @{:workspaces @{root-uri workspace}
+               :standalone-workspace workspace
+               :documents @{}
+               :position-encoding "utf-16"})
+  (def previous-push (dyn :push-diagnostics))
+  (setdyn :push-diagnostics false)
+  (documents/on-open
+    state {"textDocument" {"uri" document-uri :version 1
+                            :text "(def lazy-value 1)\n"}})
+  (def document (get-in state [:documents document-uri]))
+  (test (document :analysis) nil)
+  (test (map |($ :name) (index/definitions workspace)) @["lazy-value"])
+  (documents/refresh-pending state {"textDocument" {"uri" document-uri}})
+  (test (not (nil? (document :analysis))) true)
+  (setdyn :push-diagnostics previous-push)
+  (os/rmdir root))
+
 (deftest "replay watcher changes over completed workspace scans"
   (def changed-uri "file:///workspace/changed.janet")
   (def deleted-uri "file:///workspace/deleted.janet")

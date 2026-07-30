@@ -69,6 +69,7 @@
     (def workspace (server-utils/document-workspace state document))
     (each candidate (values (state :documents))
       (when (and (candidate :analysis-pending)
+                 (not= :open (candidate :analysis-pending))
                  (= workspace (server-utils/document-workspace state candidate)))
         (refresh state candidate workspace request-id)
         (put candidate :analysis-pending nil)))
@@ -103,6 +104,16 @@
       (when (nil? (get change "range")) (set replacement index)))
     (and replacement (array/slice changes replacement))))
 
+(defn- schedule-analysis [state document version]
+  (ev/go
+    (fn []
+      (ev/sleep 0.025)
+      (ev/give (state :messages)
+               [:ok {"jsonrpc" "2.0"
+                     "method" "janet/internal/analyzeDocument"
+                     "params" {"textDocument" {"uri" (document :uri)}
+                               "version" version}}]))))
+
 (defn on-change [state params]
   (let [document (server-utils/document state params)
         version (get-in params ["textDocument" "version"])
@@ -132,14 +143,7 @@
             (analysis/note-version document)
             (if (and (dyn :push-diagnostics) (state :messages))
               (do
-                (ev/go
-                  (fn []
-                    (ev/sleep 0.025)
-                    (ev/give (state :messages)
-                             [:ok {"jsonrpc" "2.0"
-                                   "method" "janet/internal/analyzeDocument"
-                                   "params" {"textDocument" {"uri" (document :uri)}
-                                             "version" version}}])))
+                (schedule-analysis state document version)
                 [:noresponse state])
               (if (dyn :push-diagnostics)
                 (let [snapshot (refresh state document workspace)]
@@ -448,9 +452,17 @@
                    :desynchronized false
                    :snapshots @{}
                    :snapshot-order @[]}
-        snapshot (refresh state document workspace)]
+         _ (analysis/install-index document workspace)]
     (put (state :documents) document-uri document)
     (logging/info "Document opened" [:open] 1)
     (if (dyn :push-diagnostics)
-      (push-with-dependents state document workspace snapshot)
-      [:noresponse state])))
+      (if (state :messages)
+        (do
+          (put document :analysis-pending version)
+          (schedule-analysis state document version)
+          [:noresponse state])
+        (let [snapshot (refresh state document workspace)]
+          (push-with-dependents state document workspace snapshot)))
+      (do
+        (put document :analysis-pending :open)
+        [:noresponse state]))))
