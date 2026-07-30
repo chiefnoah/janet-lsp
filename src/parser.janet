@@ -105,7 +105,8 @@
 
       :defn (/ ,(wrap-position-capture
                   ~(group (* "(" (any :ws)
-                             (+ "defn-" "defn" "defmacro-" "defmacro") (some :ws)
+                              (+ "defmacro-" "defmacro" "defn-" "defn"
+                                 "varfn-" "varfn") (some :ws)
                              (/ (group :identifier) ,(tagged-value :fn)) (some :ws)
                              (? (* (+ :string :long-string) (some :ws)))
                              "[" (any :ws)
@@ -396,7 +397,8 @@
                     (references-for name source))))
         (def lexical-scope?
           (or binding-only?
-              (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-" "defmacro"] $)
+              (any? (map |(has-value? ["let" "loop" "fn" "defn" "defn-"
+                                       "defmacro" "defmacro-" "varfn" "varfn-"] $)
                          (lookup/enclosing-call-heads loc source)))))
         (when-let [candidate ((if lexical-scope? last first) candidates)]
           {:name name :range (candidate :range)})))

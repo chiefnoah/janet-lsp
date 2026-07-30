@@ -40,12 +40,23 @@
                          @[]
                          (static-diagnostics/analyze content tree record workspace env
                                                      (not (workspace :trusted))))
-        raw-results
+        normalized
         (map (fn [result]
                (if (result :code)
                  result
                  (merge result {:code (code (or (result :message) ""))})))
-             (array ;compiler-results ;lint-results ;call-results ;static-results))
+              (array ;compiler-results ;lint-results ;call-results ;static-results))
+        seen @{}
+        raw-results
+        (keep (fn [result]
+                (def key
+                  (string/format "%j"
+                                 [(result :code) (result :message) (result :range)
+                                  (result :location)]))
+                (unless (get seen key)
+                  (put seen key true)
+                  result))
+              normalized)
         results (keep |(configuration/apply-severity $
                                                        (workspace :diagnostic-settings))
                       (configuration/suppress raw-results content))]
@@ -79,4 +90,6 @@
                                     {:contentHash (index/content-hash content)
                                      :version version})}))))
     (logging/dbg (string/format "diagnostics: %m" items) [:evaluation])
-    [items env]))
+    [items env
+     {:parse-error
+      (any? (map |(string/has-prefix? "janet.parse" ($ :code)) raw-results))}]))

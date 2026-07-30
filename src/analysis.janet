@@ -56,11 +56,10 @@
                  (merge raw-record {:content-hash (index/content-hash content)})
                  raw-record)
         _ (when state (request-control/checkpoint state request-id))
-        [items env]
+        [items env phases]
         (diagnostics/run (document :path) content encoding workspace syntax-tree record
                          version state request-id)
-        incomplete? (any? (map |(string/has-prefix? "janet.parse" ($ :code))
-                                items))
+        incomplete? (phases :parse-error)
         recovered (if incomplete?
                     (recover-index record (document :stable-index))
                     record)]

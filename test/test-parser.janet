@@ -297,10 +297,22 @@
         {:kind 3 :label some-macro}])
 
 (test (get-syms-at-loc
+         {:line 0 :character 26}
+         "(defmacro- some-macro [x]  )")
+       @[{:kind 12 :label x}
+         {:kind 3 :label some-macro}])
+
+(test (get-syms-at-loc
         {:line 0 :character 26}
-        "(defmacro- some-macro [x]  )")
+        "(varfn some-function [x] x)")
       @[{:kind 12 :label x}
-        {:kind 3 :label some-macro}])
+        {:kind 3 :label some-function}])
+
+(test (get-syms-at-loc
+        {:line 0 :character 27}
+        "(varfn- some-function [x] x)")
+      @[{:kind 12 :label x}
+        {:kind 3 :label some-function}])
 
 (test (get-syms-at-loc
         {:line 0 :character 22}

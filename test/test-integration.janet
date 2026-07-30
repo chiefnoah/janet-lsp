@@ -994,9 +994,11 @@
   (test (get-in document-symbols [:result 0 :children 2 :children 0 :name]) "z")
   (test (get-in document-symbols [:result 1 :name]) "value")
   (def workspace-symbols (request cursor 109 "workspace/symbol" {:query "sha"}))
-  (test (length (get-in workspace-symbols [:result])) 2)
-  (test (not= (get-in workspace-symbols [:result 0 :location :uri])
-              (get-in workspace-symbols [:result 1 :location :uri]))
+  (def shared-symbols
+    (filter |(= "shared" ($ :name)) (get-in workspace-symbols [:result])))
+  (test (length shared-symbols) 2)
+  (test (not= (get-in shared-symbols [0 :location :uri])
+              (get-in shared-symbols [1 :location :uri]))
         true)
   (exit-lsp cursor))
 
@@ -2236,6 +2238,29 @@
   (test (string/has-prefix? "parse error:"
                             (get-in published [:params :diagnostics 0 :message]))
         true))
+
+(deftest "report complete varfn diagnostics before malformed tails"
+  (def cursor (start-lsp {:textDocument {:diagnostic {}}}))
+  (var version 0)
+  (each head ["varfn" "varfn-"]
+    (+= version 1)
+    (if (= version 1)
+      (open-text-document
+        cursor document-uri
+        (string "(" head " visit [unused] nil)\n(\n") version)
+      (change-text-document
+        cursor document-uri
+        (string "(" head " visit [unused] nil)\n(\n") version))
+    (def report
+      (request cursor (+ 320 version) "textDocument/diagnostic"
+               {:textDocument {:uri document-uri}}))
+    (def items (get-in report [:result :items]))
+    (def codes (frequencies (map |($ :code) items)))
+    (test (get codes "janet.lint.unused-parameter") 1)
+    (test (get codes "janet.parse.unclosed-delimiter") 1)
+    (test (get codes "janet.lint.undefined-symbol") nil)
+    (test (length items) 2))
+  (exit-lsp cursor))
 
 (deftest "preserve imported definitions while forms are incomplete"
   (def root (temp-directory "janet-lsp-incomplete-index"))

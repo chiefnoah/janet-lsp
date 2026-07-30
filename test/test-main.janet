@@ -204,6 +204,25 @@
   (test (get-in workspace [:document-generations dependent-uri]) 1)
   (test (get-in workspace [:document-generations unrelated-uri]) nil))
 
+(deftest "preserve structural parse state when parse diagnostics are disabled"
+  (def document-uri "file:///workspace/main.janet")
+  (def document
+    @{:uri document-uri :path "/workspace/main.janet"
+      :content "(def exported 1)\n" :version 1
+      :snapshots @{} :snapshot-order @[]})
+  (def workspace
+    @{:uri "file:///workspace" :trusted false :index @{}
+      :diagnostic-generation 0 :diagnostic-settings @{"parse" false}
+      :document-generations @{}})
+  (analysis/refresh document workspace "utf-16")
+  (put document :content "(def exported 1)\n(")
+  (put document :version 2)
+  (def incomplete (analysis/refresh document workspace "utf-16"))
+  (test (incomplete :incomplete) true)
+  (test (incomplete :diagnostics) @[])
+  (test (map |($ :name) (get-in incomplete [:index :definitions]))
+        @["exported"]))
+
 (deftest "honor git ignores and hidden directories during source discovery"
   (def root (platform/temp-path (string "janet-lsp-source-files-" (os/getpid))))
   (when (os/stat root) (remove-test-tree root))
