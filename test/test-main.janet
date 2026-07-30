@@ -382,6 +382,7 @@
   (def changed
     (index-cache/load cache-path root-uri root index/default-exclusions))
   (test (changed :complete) false)
+  (test (changed :hashed) 1)
   (test (deep= (changed :dirty) @[source-path]) true)
   (def rebuilt
     (index-cache/rebuild cache-path root-uri root index/default-exclusions))

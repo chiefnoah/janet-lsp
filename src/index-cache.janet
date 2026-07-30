@@ -147,28 +147,43 @@
 
 (defn load [cache-path root-uri root exclusions]
   (var envelope (read-envelope cache-path root-uri exclusions))
+  (def cache-metadata (metadata cache-path))
   (when (and (os/stat cache-path) (not envelope))
     (try (os/rm cache-path) ([_] nil)))
   (def filepaths (index/files root exclusions))
   (var valid @{})
   (var dirty @[])
+  (var hashed 0)
   (each filepath filepaths
     (def document-uri (uri/path->file-uri filepath))
     (def entry (and envelope (get-in envelope [:entries document-uri])))
-    (def current (sample filepath))
+    (def current-metadata (metadata filepath))
+    # Integer-second mtimes are ambiguous only when the cache was written in the
+    # same timestamp tick as its source. Older unchanged files need no reread.
+    (def metadata-current
+      (and current-metadata
+           (deep= current-metadata (and entry (entry :metadata)))
+           cache-metadata
+           (> (cache-metadata :modified) (current-metadata :modified))))
+    (def current
+      (when (and (dictionary? entry) (not metadata-current))
+        (+= hashed 1)
+        (sample filepath)))
     (if (and (dictionary? entry)
-             current
-             (deep= current
-                    {:metadata (entry :metadata)
-                     :content-hash (entry :content-hash)})
+             (or metadata-current
+                 (and current
+                      (deep= current
+                             {:metadata (entry :metadata)
+                              :content-hash (entry :content-hash)})))
              (= (entry :content-hash) (get-in entry [:record :content-hash]))
              (record? (entry :record) document-uri))
       (put valid document-uri (entry :record))
       (array/push dirty filepath)))
   {:index valid
-   :dirty dirty
-   :files filepaths
-   :complete (and envelope
+    :dirty dirty
+    :files filepaths
+    :hashed hashed
+    :complete (and envelope
                   (empty? dirty)
                   (= (length filepaths) (length (envelope :entries))))})
 
