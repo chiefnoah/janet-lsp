@@ -2608,6 +2608,13 @@
   (def member-source "(import ./module :as module)\nmodule/ex\n")
   (def member-items (complete 172 member-source 1 9))
   (test (has-value? (map |($ :label) member-items) "module/exported") true)
+  (def member-item
+    (first (filter |(= "module/exported" ($ :label)) member-items)))
+  (test (get-in member-item [:textEdit :range :start :line]) 1)
+  (test (get-in member-item [:textEdit :range :start :character]) 0)
+  (test (get-in member-item [:textEdit :range :end :line]) 1)
+  (test (get-in member-item [:textEdit :range :end :character]) 9)
+  (test (get-in member-item [:textEdit :newText]) "module/exported")
   (test (has-value? (map |($ :label) member-items) "module/hidden") false)
   (test (has-value? (map |($ :label) member-items) "module/secret") false)
   (def alias-items (complete 182 "(import ./module :as module)\nmod\n" 1 3))

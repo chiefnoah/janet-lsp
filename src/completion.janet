@@ -308,7 +308,7 @@
                 (<= (lookup/to-index (get-in $ [:range :end]) content) cursor))
           (get-in document [:analysis :index :imports] @[])))
 
-(defn- imported-items [workspace document imports usage]
+(defn- imported-items [state workspace document token imports usage]
   (def found @[])
   (each imported imports
     (when (has-value? ["import" "import*" "use"] (imported :kind))
@@ -319,10 +319,12 @@
                     (has-value? (imported :only) (definition :name)))
             (def label (string (imported :prefix) (definition :name)))
             (array/push found
-                        {:label label
-                         :kind (definition :kind)
-                         :detail (string "Imported from " (imported :module))
-                         :sortText (rank 1 (get usage label 0) label)}))))))
+                         {:label label
+                          :kind (definition :kind)
+                          :detail (string "Imported from " (imported :module))
+                          :sortText (rank 1 (get usage label 0) label)
+                          :textEdit (lsp-token-edit state (document :content)
+                                                    token label)}))))))
   (utils/concat-dedup-by-label found))
 
 (defn- call-module [content call]
@@ -519,7 +521,7 @@
         globals (seq [name :in (all-bindings (document :eval-env))]
                   (binding-item name (document :eval-env)))
         imports (visible-imports document cursor)
-        imported (imported-items workspace document imports usage)
+        imported (imported-items state workspace document token imports usage)
         visible (visible-set (array ;locals ;imported ;globals))
         only (only-items state workspace document token call stack usage)
         bare-call?
