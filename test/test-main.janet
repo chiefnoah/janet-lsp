@@ -170,6 +170,40 @@
   (test (workspace :links-dirty) false)
   (test (index/definitions workspace "generated") @[]))
 
+(deftest "invalidate only reverse dependents when link shapes change"
+  (def module-uri "file:///workspace/module.janet")
+  (def dependent-uri "file:///workspace/dependent.janet")
+  (def unrelated-uri "file:///workspace/unrelated.janet")
+  (def workspace
+    @{:index
+      @{module-uri (index/analyze module-uri "(def exported 1)\n")
+        dependent-uri
+        (index/analyze dependent-uri
+                       "(import ./module :only [exported] :prefix \"\")\nexported\n")
+        unrelated-uri (index/analyze unrelated-uri "(def unrelated 1)\n")}
+      :index-generation 0
+      :document-generations @{}
+      :dirty-link-uris @{}})
+  (index/relink workspace)
+
+  (analysis/replace-record
+    workspace module-uri
+    (index/analyze module-uri "# comment\n(def exported 2)\n"))
+  (test (length (keys (workspace :dirty-link-uris))) 1)
+  (test (get-in workspace [:dirty-link-uris module-uri]) true)
+  (test (workspace :document-generations) @{})
+
+  (put workspace :dirty-link-uris @{})
+  (put workspace :links-dirty false)
+  (analysis/replace-record workspace module-uri
+                           (index/analyze module-uri "(def replacement 1)\n"))
+  (test (get-in workspace [:dirty-link-uris module-uri]) true)
+  (test (get-in workspace [:dirty-link-uris dependent-uri]) true)
+  (test (get-in workspace [:dirty-link-uris unrelated-uri]) nil)
+  (test (get-in workspace [:document-generations module-uri]) 1)
+  (test (get-in workspace [:document-generations dependent-uri]) 1)
+  (test (get-in workspace [:document-generations unrelated-uri]) nil))
+
 (deftest "honor git ignores and hidden directories during source discovery"
   (def root (platform/temp-path (string "janet-lsp-source-files-" (os/getpid))))
   (when (os/stat root) (remove-test-tree root))

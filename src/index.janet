@@ -665,7 +665,11 @@
                               (string/has-suffix? "-" ($ :form))))
                     (definitions workspace (last (string/split "/" name)))))))))
 
-(defn relink [workspace]
+(defn relink [workspace &opt document-uris]
+  (def selected
+    (and document-uris
+         (if (dictionary? document-uris) document-uris
+           (frequencies document-uris))))
   (def definitions-by-document @{})
   (def module-cache @{})
   (def exported-cache @{})
@@ -681,6 +685,7 @@
         (put module-cache key
              (module-uri workspace (record :uri) (imported :module))))))
   (each record (values (workspace :index))
+    (when (or (nil? selected) (get selected (record :uri)))
     (def local-callables @{})
     (each callable (get record :callables @[])
       (when (callable :local)
@@ -703,7 +708,7 @@
                         (get-in reference [:range :start]) definitions-by-document
                         module-cache exported-cache)]
             (put reference :identity (definition :identity))
-            (put reference :identity-kind :import))))))
+            (put reference :identity-kind :import)))))))
   (def all-callables
     (catseq [record :in (values (workspace :index))
              callable :in (get record :callables @[])]
@@ -719,6 +724,7 @@
       (put callable-name-counts (callable :name)
            (inc (get callable-name-counts (callable :name) 0)))))
   (each record (values (workspace :index))
+    (when (or (nil? selected) (get selected (record :uri)))
     (def references-by-position @{})
     (each reference (record :references)
       (put references-by-position
@@ -768,8 +774,71 @@
               (and unresolved-import?
                     (not= 1 (get callable-name-counts fallback-name 0)))
               (> (length imported-identities) 1)))
-        (unless duplicate? (put call :identity identity)))))
+        (unless duplicate? (put call :identity identity))))))
   workspace)
+
+(defn dependent-uris [workspace document-uri]
+  (def affected @{document-uri true})
+  (var changed true)
+  (while changed
+    (set changed false)
+    (each record (values (workspace :index))
+      (unless (get affected (record :uri))
+        (when (any? (map (fn [imported]
+                           (when-let [target
+                                      (module-uri workspace (record :uri)
+                                                  (imported :module))]
+                             (get affected target)))
+                         (record :imports)))
+          (put affected (record :uri) true)
+          (set changed true)))))
+  affected)
+
+(defn stabilize-identities [previous record]
+  (when (and previous record)
+    (def old-by-key @{})
+    (def new-by-key @{})
+    (defn add [target definition]
+      (when (definition :top-level)
+        (def key [(definition :name) (definition :form)])
+        (unless (get target key) (put target key @[]))
+        (array/push (get target key) definition)))
+    (each definition (previous :definitions) (add old-by-key definition))
+    (each definition (record :definitions) (add new-by-key definition))
+    (def replacements @{})
+    (eachp [key definitions] new-by-key
+      (def old (get old-by-key key))
+      (when (and old (= 1 (length definitions)) (= 1 (length old)))
+        (def new-identity (get-in definitions [0 :identity]))
+        (def old-identity (get-in old [0 :identity]))
+        (unless (= new-identity old-identity)
+          (put replacements new-identity old-identity))))
+    (eachp [definition-index definition] (record :definitions)
+      (when-let [identity (get replacements (definition :identity))]
+        (put (record :definitions) definition-index
+             (merge definition {:identity identity}))))
+    (each reference (record :references)
+      (when-let [identity (get replacements (reference :identity))]
+        (put reference :identity identity)))
+    (each callable (record :callables)
+      (when-let [identity (get replacements (callable :identity))]
+        (put callable :identity identity)))
+    (each call (record :calls)
+      (when-let [identity (get replacements (call :identity))]
+        (put call :identity identity))
+      (when-let [caller (get replacements (call :caller))]
+        (put call :caller caller))))
+  record)
+
+(defn link-shape [record]
+  (when record
+    [(map |[($ :name) ($ :identity) ($ :form) ($ :private) ($ :top-level)
+            (map |($ :name) (get $ :children @[])) ($ :type-target)
+            ($ :return-target) (get $ :implementation-targets @[])]
+          (record :definitions))
+     (map |[($ :kind) ($ :module) ($ :prefix) ($ :only) ($ :export)
+            ($ :top-level)]
+          (record :imports))]))
 
 (defn update [workspace document-uri content]
   (put (workspace :index) document-uri (analyze document-uri content))

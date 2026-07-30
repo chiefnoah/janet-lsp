@@ -34,9 +34,12 @@
 (defn key [version content]
   (string (if (nil? version) "null" version) ":" (index/content-hash content)))
 
-(defn- diagnostic-result-id [workspace snapshot-key items]
+(defn- document-generation [workspace document-uri]
+  (get-in workspace [:document-generations document-uri] 0))
+
+(defn- diagnostic-result-id [workspace document-uri snapshot-key items]
   (string (workspace :diagnostic-generation) ":"
-          (or (workspace :index-generation) 0) ":" snapshot-key ":"
+          (document-generation workspace document-uri) ":" snapshot-key ":"
           (index/content-hash (string/format "%j" items))))
 
 (defn build [document workspace encoding &opt state request-id]
@@ -70,8 +73,9 @@
      :workspace-uri (workspace :uri)
      :trusted (workspace :trusted)
      :diagnostic-generation (workspace :diagnostic-generation)
-     :index-generation (or (workspace :index-generation) 0)
-      :diagnostic-result-id (diagnostic-result-id workspace (key version content) items)
+     :index-generation (document-generation workspace (document :uri))
+     :diagnostic-result-id (diagnostic-result-id workspace (document :uri)
+                                                  (key version content) items)
       :incomplete incomplete?
      :syntax-tree syntax-tree
       :signatures (if oversized @[] (signatures/all content))
@@ -88,8 +92,8 @@
              (= (snapshot :trusted) (workspace :trusted))
              (= (snapshot :diagnostic-generation)
                 (workspace :diagnostic-generation))
-             (= (or (snapshot :index-generation) 0)
-                (or (workspace :index-generation) 0)))
+              (= (or (snapshot :index-generation) 0)
+                 (document-generation workspace (document :uri))))
     snapshot))
 
 (defn find-snapshot [document snapshot-key]
@@ -128,6 +132,7 @@
 
 (defn replace-record [workspace document-uri record]
   (def previous (get-in workspace [:index document-uri]))
+  (index/stabilize-identities previous record)
   (def same-content
     (and previous record
          (= (previous :content-hash) (record :content-hash))))
@@ -135,13 +140,24 @@
     (and previous (filter |($ :generated) (previous :definitions))))
   (def generated
     (and record (filter |($ :generated) (record :definitions))))
+  (def same-links (deep= (index/link-shape previous) (index/link-shape record)))
   (unless (and same-content (deep= previous-generated generated))
     (put (workspace :index) document-uri record)
-    (put workspace :links-dirty true))
-  (unless same-content
+    (put workspace :links-dirty true)
+    (unless (workspace :dirty-link-uris) (put workspace :dirty-link-uris @{}))
+    (put (workspace :dirty-link-uris) document-uri true))
+  (unless same-links
+    (def affected (index/dependent-uris workspace document-uri))
+    (unless (workspace :document-generations)
+      (put workspace :document-generations @{}))
+    (unless (workspace :dirty-link-uris) (put workspace :dirty-link-uris @{}))
+    (each uri (keys affected)
+      (put (workspace :dirty-link-uris) uri true)
+      (put (workspace :document-generations) uri
+           (inc (get (workspace :document-generations) uri 0))))
     (put workspace :index-generation
-         (inc (or (workspace :index-generation) 0))))
-  (or (workspace :index-generation) 0))
+          (inc (or (workspace :index-generation) 0))))
+  (document-generation workspace document-uri))
 
 (defn install [document workspace snapshot &opt state request-id]
   (replace-record workspace (document :uri) (snapshot :index))
@@ -150,14 +166,14 @@
     (merge snapshot
             {:index linked-record
              :references (linked-record :references)
-             :index-generation (or (workspace :index-generation) 0)
+              :index-generation (document-generation workspace (document :uri))
               :semantic (if (> (length (snapshot :source)) eval/max-source-bytes)
                           @[]
                           (semantic-tokens/records
                             linked-record (snapshot :eval-env)
                             (snapshot :source) workspace state request-id))
             :diagnostic-result-id
-            (diagnostic-result-id workspace (snapshot :key)
+            (diagnostic-result-id workspace (document :uri) (snapshot :key)
                                    (snapshot :diagnostics))}))
   (unless (snapshot :incomplete)
     (put document :stable-index linked-record))

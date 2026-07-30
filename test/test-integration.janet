@@ -2131,9 +2131,15 @@
     (request cursor 164 "textDocument/diagnostic"
              {:textDocument {:uri main-uri}}))
   (test (get-in initial [:result :items]) @[])
-  (change-text-document cursor module-uri "(def replacement 1)\n" 2)
-  (def changed
+  (change-text-document cursor module-uri "# comment\n(def exported 2)\n" 2)
+  (def unchanged
     (request cursor 165 "textDocument/diagnostic"
+             {:textDocument {:uri main-uri}
+              :previousResultId (get-in initial [:result :resultId])}))
+  (test (get-in unchanged [:result :kind]) "unchanged")
+  (change-text-document cursor module-uri "(def replacement 1)\n" 3)
+  (def changed
+    (request cursor 167 "textDocument/diagnostic"
              {:textDocument {:uri main-uri}
               :previousResultId (get-in initial [:result :resultId])}))
   (test (get-in changed [:result :kind]) "full")
