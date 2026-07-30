@@ -647,23 +647,7 @@
                            (module-uri workspace document-uri (imported :module)))]
                 (cached-exported-definition workspace target-uri target-name
                                             exported-cache)))))
-        (record :imports))
-      (when (> (length (string/split "/" name)) 1)
-        (when
-          (any?
-            (map |(and (visible-import? $ position)
-                       (has-value? ["import" "import*"] ($ :kind))
-                       (not (empty? ($ :prefix)))
-                       (string/has-prefix? ($ :prefix) name)
-                        (nil? (if module-cache
-                                (get module-cache
-                                     (module-cache-key document-uri ($ :module)))
-                                (module-uri workspace document-uri ($ :module)))))
-                 (record :imports)))
-          (first
-            (filter |(not (or ($ :private)
-                              (string/has-suffix? "-" ($ :form))))
-                    (definitions workspace (last (string/split "/" name)))))))))
+        (record :imports))))
 
 (defn relink [workspace &opt document-uris]
   (def selected

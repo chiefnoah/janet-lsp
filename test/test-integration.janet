@@ -830,7 +830,8 @@
                           :text "(def shared 1)\nshared\n"}})
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri second-uri :languageId "janet" :version 1
-                          :text "(import ./format-file-after)\nformat-file-after/shared\n"}})
+                          :text (string "(import \"./format-file-after.txt\" :as module)\n"
+                                        "module/shared\n")}})
   (def local
     (request cursor 104 "textDocument/definition"
              {:textDocument {:uri document-uri}
@@ -840,7 +841,7 @@
   (def imported
     (request cursor 105 "textDocument/definition"
              {:textDocument {:uri second-uri}
-              :position {:line 1 :character 18}}))
+              :position {:line 1 :character 8}}))
   (test (= (get-in imported [:result :uri]) document-uri) true)
 
   (notify cursor "textDocument/didChange"
@@ -858,6 +859,42 @@
           [:result])
         :null)
   (exit-lsp cursor))
+
+(deftest "do not resolve external qualified names by workspace basename"
+  (def root (temp-directory "janet-lsp-qualified-definition"))
+  (def unrelated-path (path/join root "diagnostics.janet"))
+  (def module-path (path/join root "module.janet"))
+  (def other-path (path/join root "other.janet"))
+  (def main-path (path/join root "main.janet"))
+  (def root-uri (uri/path->file-uri root))
+  (def module-uri (uri/path->file-uri module-path))
+  (def main-uri (uri/path->file-uri main-path))
+  (spit unrelated-path "(defn run [] :unrelated)\n")
+  (spit module-path "(defn run [] :module)\n")
+  (spit other-path "(defn run [] :other)\n")
+  (spit main-path "(import cmd)\n(import ./module :as module)\ncmd/run\nmodule/run\n")
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 330 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document
+    cursor main-uri
+    "(import cmd)\n(import ./module :as module)\ncmd/run\nmodule/run\n")
+  (def external
+    (request cursor 331 "textDocument/definition"
+             {:textDocument {:uri main-uri}
+              :position {:line 2 :character 5}}))
+  (test (get-in external [:result]) :null)
+  (def local
+    (request cursor 332 "textDocument/definition"
+             {:textDocument {:uri main-uri}
+              :position {:line 3 :character 8}}))
+  (test (= module-uri (get-in local [:result :uri])) true)
+  (exit-lsp cursor)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
 
 (deftest "navigate explicit type and implementation metadata"
   (def base (temp-directory "janet-lsp-type-navigation"))
@@ -944,7 +981,7 @@
                           :text "(def shared 1)\nshared\n"}})
   (notify cursor "textDocument/didOpen"
           {:textDocument {:uri imported-uri :languageId "janet" :version 1
-                          :text (string "(import ./format-file-after :as module)\n"
+                          :text (string "(import \"./format-file-after.txt\" :as module)\n"
                                         "module/shared\n")}})
   (def definition
     (request cursor 136 "textDocument/definition"
