@@ -1,6 +1,7 @@
 (import ./doc)
 (import ./analysis)
 (import ./completion)
+(import ./eval)
 (import ./logging)
 (import ./lookup)
 (import ./position)
@@ -114,12 +115,20 @@
   (def workspace (server-utils/document-workspace state document))
   (def snapshot (or (analysis/current document workspace)
                     (analysis/refresh document workspace
-                                      (state :position-encoding))))
+                                      (state :position-encoding) state request-id)))
   (if (and request-id (has-key? (state :cancelled-requests) request-id))
     [:cancelled]
     (try
-      [:ok (semantic-tokens/encode state (document :content)
-                                   (snapshot :semantic) requested request-id)]
+      (do
+        (unless (snapshot :semantic)
+          (put snapshot :semantic
+               (if (> (length (snapshot :source)) eval/max-source-bytes)
+                 @[]
+                 (semantic-tokens/records
+                   (snapshot :index) (snapshot :eval-env) (snapshot :source)
+                   workspace state request-id))))
+        [:ok (semantic-tokens/encode state (document :content)
+                                     (snapshot :semantic) requested request-id)])
       ([err] (if (= :request-cancelled err)
                [:cancelled]
                (error err))))))

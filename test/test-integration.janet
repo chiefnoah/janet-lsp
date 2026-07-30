@@ -1792,6 +1792,67 @@
   (test (has-value? (map |($ :type) decoded) 9) true)
   (exit-lsp cursor))
 
+(deftest "refresh imported semantic identities after relinking"
+  (def root (temp-directory "janet-lsp-linked-semantics"))
+  (def module-path (path/join root "module.janet"))
+  (def main-path (path/join root "main.janet"))
+  (def root-uri (uri/path->file-uri root))
+  (def module-uri (uri/path->file-uri module-path))
+  (def main-uri (uri/path->file-uri main-path))
+  (def module-source
+    "(defn exported [] nil)\n(defmacro expand [] nil)\n")
+  (def main-source
+    "(import ./module :as mod)\n(mod/exported)\n(mod/expand)\n")
+  (spit module-path module-source)
+  (spit main-path main-source)
+  (def cache-path (index-cache/path-for root-uri))
+  (index-cache/write cache-path root-uri index/default-exclusions
+                     (index/scan root index/default-exclusions))
+  (def cursor (spawn-lsp))
+  (request cursor 310 "initialize"
+           {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
+  (open-text-document cursor module-uri module-source)
+  (open-text-document cursor main-uri main-source)
+
+  (def first-response
+    (request cursor 311 "textDocument/semanticTokens/full"
+             {:textDocument {:uri main-uri}}))
+  (defn decoded-types [data]
+    (def found @{})
+    (var line 0)
+    (var character 0)
+    (each offset (range 0 (length data) 5)
+      (def delta-line (data offset))
+      (set line (+ line delta-line))
+      (set character (if (= delta-line 0)
+                       (+ character (data (inc offset)))
+                       (data (inc offset))))
+      (put found [line character] (data (+ offset 3))))
+    found)
+  (def first-types (decoded-types (get-in first-response [:result :data])))
+  (test (get first-types [1 1]) 2)
+  (test (get first-types [2 1]) 3)
+
+  (change-text-document
+    cursor module-uri
+    "(defn exported [] nil)\n(defn expand [] nil)\n" 2)
+  (def changed
+    (get-in
+      (request cursor 312 "textDocument/semanticTokens/full/delta"
+               {:textDocument {:uri main-uri}
+                :previousResultId (get-in first-response [:result :resultId])})
+      [:result]))
+  (test (> (length (changed :edits)) 0) true)
+  (def refreshed
+    (get-in
+      (request cursor 313 "textDocument/semanticTokens/full"
+               {:textDocument {:uri main-uri}})
+      [:result :data]))
+  (test (get (decoded-types refreshed) [2 1]) 2)
+  (exit-lsp cursor)
+  (when (os/stat cache-path) (os/rm cache-path))
+  (remove-tree root))
+
 (deftest "provide trusted evidence-based code lenses lazily"
   (def root (temp-directory "janet-lsp-code-lenses"))
   (def source-path (path/join root "main.janet"))

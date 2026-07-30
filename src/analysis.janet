@@ -3,7 +3,6 @@
 (import ./index)
 (import ./parser)
 (import ./request-control)
-(import ./semantic-tokens)
 (import ./signatures)
 
 (def max-snapshots 4)
@@ -167,11 +166,7 @@
             {:index linked-record
              :references (linked-record :references)
               :index-generation (document-generation workspace (document :uri))
-              :semantic (if (> (length (snapshot :source)) eval/max-source-bytes)
-                          @[]
-                          (semantic-tokens/records
-                            linked-record (snapshot :eval-env)
-                            (snapshot :source) workspace state request-id))
+              :semantic nil
             :diagnostic-result-id
             (diagnostic-result-id workspace (document :uri) (snapshot :key)
                                    (snapshot :diagnostics))}))
