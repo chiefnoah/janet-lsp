@@ -1,6 +1,7 @@
 {
   commit,
   fetchFromGitHub,
+  git,
   janet,
   jpm,
   lib,
@@ -63,6 +64,8 @@ stdenv.mkDerivation {
   '';
 
   doCheck = true;
+
+  nativeCheckInputs = [ git ];
 
   checkPhase = ''
     runHook preCheck
