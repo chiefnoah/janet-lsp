@@ -55,10 +55,35 @@
     (buffer/push-string body chunk))
   (json/decode body true))
 
+(defn read-until
+  ``Read messages until pred matches one. Messages that do not match
+  are kept on a pending queue: notifications (logMessage,
+  diagnostics, ...) and server requests arrive in nondeterministic
+  order, but none may be lost.``
+  [cursor pred]
+  (var found nil)
+
+  # Oldest buffered message first.
+  (var index 0)
+  (while (and (nil? found) (< index (length (cursor :pending))))
+    (def held (get (cursor :pending) index))
+    (if (pred held)
+      (do (set found held) (array/remove (cursor :pending) index))
+      (++ index)))
+
+  # Nothing buffered matches; read from the wire.
+  (while (nil? found)
+    (def msg (read-output cursor))
+    (if (pred msg)
+      (set found msg)
+      (array/push (cursor :pending) msg)))
+  found)
+
 (defn request [cursor id method &opt params]
   (write-output cursor {:jsonrpc "2.0" :id id :method method
                         :params (or params {})})
-  (read-output cursor))
+  # Notifications may arrive before the response; buffer them.
+  (read-until cursor |(= ($ :id) id)))
 
 (defn notify [cursor method &opt params]
   (write-output cursor {:jsonrpc "2.0" :method method :params (or params {})}))
@@ -77,7 +102,8 @@
   (def process
     (os/spawn [(dyn :executable) "./src/main.janet" "--dont-search-jpm-tree"]
               :p {:in :pipe :out :pipe}))
-  @{:process process :to-lsp (process :in) :from-lsp (process :out)})
+  @{:process process :to-lsp (process :in) :from-lsp (process :out)
+    :pending @[]})
 
 (defn start-lsp [&opt capabilities initialization-options]
   (default capabilities {})

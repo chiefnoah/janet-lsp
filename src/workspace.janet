@@ -15,6 +15,9 @@
 
 (varfn reanalyze-open-documents [])
 
+# Defined after the scan bookkeeping; referenced by scan waiters.
+(varfn complete-scan [state workspace] nil)
+
 (defn- janet-executable []
   (def executable (dyn :executable))
   (or (and (os/stat executable) (path/abspath executable))
@@ -191,7 +194,16 @@
                (fn []
                  (def status (os/proc-wait process))
                  (when (= token (workspace :scan-token))
-                   (put workspace :scan-status status)))))
+                   (put workspace :scan-status status)
+                   # Report completion immediately; do not wait for
+                   # the next inbound message to notice the exit.
+                   (try
+                     (complete-scan state workspace)
+                     ([err fiber]
+                       (logging/err
+                         (string/format "Could not complete workspace index: %m" err)
+                         [:index])
+                       (debug/stacktrace fiber err "")))))))
         (when (state :work-done-progress)
           (def id (string "janet-lsp/progress/create/" digest))
           (put (state :pending-requests) id
@@ -221,10 +233,12 @@
           (report-index-failure workspace :cache-write true)))))
   state)
 
-(defn refresh-scans [state]
-  (each workspace (values (state :workspaces))
-    (when (and (workspace :scan) (number? (workspace :scan-status)))
-      (def output (workspace :scan-output))
+(varfn complete-scan [state workspace]
+  # Claim the scan first so the waiter fiber and refresh-scans
+  # cannot both process the same completion.
+  (when (and (workspace :scan) (number? (workspace :scan-status)))
+    (put workspace :scan nil)
+    (def output (workspace :scan-output))
       (def found (and output (os/stat output)))
       (var result
         (if found
@@ -289,6 +303,10 @@
                   {:kind "end"
                    :message (if succeeded "Index complete" "Index failed")}))
       (put workspace :progress-started false)))
+
+(defn refresh-scans [state]
+  (each workspace (values (state :workspaces))
+    (complete-scan state workspace))
   (flush-cache-writes state))
 
 (defn- remove-scan-files [workspace]

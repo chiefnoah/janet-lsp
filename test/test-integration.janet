@@ -82,7 +82,8 @@
     (os/spawn [(dyn :executable) "./src/main.janet" "--debug" port-arg
                "--dont-search-jpm-tree"]
               :p {:in :pipe :out :pipe}))
-  (def cursor @{:process process :to-lsp (process :in) :from-lsp (process :out)})
+  (def cursor @{:process process :to-lsp (process :in) :from-lsp (process :out)
+                :pending @[]})
   (test (get-in
           (request cursor 98 "initialize"
                    {:rootUri workspace-uri :capabilities {}})
@@ -105,20 +106,23 @@
                              :textDocument {:diagnostic {}}}}))
   (test (get-in initialized [:id]) 100)
   (notify cursor "initialized")
-  (def create (read-output cursor))
+  (def create (read-until cursor |(= ($ :method) "window/workDoneProgress/create")))
   (test (get-in create [:method]) "window/workDoneProgress/create")
-  (def trust (read-output cursor))
+  (def trust (read-until cursor |(= ($ :method) "window/showMessageRequest")))
   (respond cursor (get-in create [:id]) :null)
-  (def begin (read-output cursor))
+  (def begin
+    (read-until cursor |(and (= ($ :method) "$/progress")
+                             (= (get-in $ [:params :value :kind]) "begin"))))
   (test (get-in begin [:method]) "$/progress")
   (test (get-in begin [:params :value :kind]) "begin")
   (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
-  (ev/sleep 0.2)
   (write-output cursor {:jsonrpc "2.0" :id 101 :method "janet/serverInfo" :params {}})
-  (def ended (read-output cursor))
+  (def ended
+    (read-until cursor |(and (= ($ :method) "$/progress")
+                             (= (get-in $ [:params :value :kind]) "end"))))
   (test (get-in ended [:method]) "$/progress")
   (test (get-in ended [:params :value :kind]) "end")
-  (test (get-in (read-output cursor) [:id]) 101)
+  (test (get-in (read-until cursor |(= ($ :id) 101)) [:id]) 101)
   (exit-lsp cursor)
   (remove-tree root))
 
@@ -130,10 +134,18 @@
   (request cursor 127 "initialize"
            {:rootUri root-uri :capabilities {:textDocument {:diagnostic {}}}})
   (notify cursor "initialized")
-  (def trust (read-output cursor))
+  (def trust (read-until cursor |(= ($ :method) "window/showMessageRequest")))
   (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
-  (ev/sleep 0.2)
-  (def symbols (request cursor 128 "workspace/symbol" {:query "without-progress"}))
+  # Poll until the background scan indexes the workspace; a fixed
+  # sleep loses the race on slow CI runners.
+  (var symbols nil)
+  (var polls 0)
+  (while (< polls 50)
+    (++ polls)
+    (ev/sleep 0.2)
+    (set symbols
+         (request cursor 128 "workspace/symbol" {:query "without-progress"}))
+    (when (not (empty? (get symbols :result []))) (break)))
   (test (get-in symbols [:result 0 :name]) "indexed-without-progress")
   (exit-lsp cursor)
   (remove-tree root))
@@ -213,22 +225,31 @@
                            :textDocument {:diagnostic {}}}})
   (remove-tree root)
   (notify cursor "initialized")
-  (def create (read-output cursor))
-  (def trust (read-output cursor))
+  (def create (read-until cursor |(= ($ :method) "window/workDoneProgress/create")))
+  (def trust (read-until cursor |(= ($ :method) "window/showMessageRequest")))
   (respond cursor (get-in create [:id]) :null)
-  (test (get-in (read-output cursor) [:params :value :kind]) "begin")
+  (test (get-in
+          (read-until
+            cursor |(and (= ($ :method) "$/progress")
+                         (= (get-in $ [:params :value :kind]) "begin")))
+          [:params :value :kind])
+         "begin")
   (respond cursor (get-in trust [:id]) {:title "Keep Restricted"})
-  (ev/sleep 0.2)
+  # The server reports the failure as soon as the indexer exits;
+  # the 130 response may overtake the log and progress messages.
   (write-output cursor {:jsonrpc "2.0" :id 130 :method "janet/serverInfo" :params {}})
-  (def reported (read-output cursor))
+  (def reported (read-until cursor |(= ($ :method) "window/logMessage")))
   (test (get-in reported [:method]) "window/logMessage")
   (test (get-in reported [:params :type]) 1)
   (test (number? (string/find root-uri (get-in reported [:params :message]))) true)
   (test (string/find "source" (get-in reported [:params :message])) nil)
-  (def ended (read-output cursor))
+  (def ended
+    (read-until
+      cursor |(and (= ($ :method) "$/progress")
+                   (= (get-in $ [:params :value :kind]) "end"))))
   (test (get-in ended [:params :value :kind]) "end")
   (test (get-in ended [:params :value :message]) "Index failed")
-  (test (get-in (read-output cursor) [:id]) 130)
+  (test (get-in (read-until cursor |(= ($ :id) 130)) [:id]) 130)
   (exit-lsp cursor))
 
 (deftest: with-process "convert default UTF-16 feature positions" [cursor]
